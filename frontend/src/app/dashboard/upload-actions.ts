@@ -15,11 +15,12 @@ import { auth } from '@clerk/nextjs/server';
 async function uploadFileToS3(
   fileBuffer: Buffer,
   fileName: string,
-  fileType: string
+  fileType: string,
+  projectId: string
 ) {
   const params = {
     Bucket: env.AWS_S3_BUCKET_NAME,
-    Key: fileName,
+    Key: `${projectId}/${fileName}`,
     Body: fileBuffer,
     ContentType: fileType,
   };
@@ -70,8 +71,12 @@ export async function uploadFile(
     const buffer = Buffer.from(await file.arrayBuffer());
 
     // Upload file to S3
-    const fileName = `${fileType}-${Date.now()}-${file.name}`;
-    await uploadFileToS3(buffer, fileName, file.type);
+    const fileKey = await uploadFileToS3(
+      buffer,
+      file.name,
+      file.type,
+      projectId
+    );
 
     const fileTypeMapping = {
       left_camera: 'left_camera',
@@ -91,8 +96,8 @@ export async function uploadFile(
     const fileMetadata = await addProjectFile(
       projectId,
       mappedFileType,
-      fileName,
-      `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com/${fileName}`,
+      fileKey,
+      `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com/${fileKey}`,
       file.type
     );
 

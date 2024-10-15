@@ -14,7 +14,7 @@ export async function processAndUploadFiles({
   leftAudio,
   rightAudio,
 }: {
-  projectId: number;
+  projectId: string;
   userId: string;
   leftCamera: string;
   mainCamera: string;
@@ -33,11 +33,11 @@ export async function processAndUploadFiles({
 
   // Download the files from S3 or other storage
   await Promise.all([
-    downloadFileFromS3(leftCamera, localLeftCamera),
-    downloadFileFromS3(mainCamera, localMainCamera),
-    downloadFileFromS3(rightCamera, localRightCamera),
-    downloadFileFromS3(leftAudio, localLeftAudio),
-    downloadFileFromS3(rightAudio, localRightAudio),
+    downloadFileFromS3(`${projectId}/${leftCamera}`, localLeftCamera),
+    downloadFileFromS3(`${projectId}/${mainCamera}`, localMainCamera),
+    downloadFileFromS3(`${projectId}/${rightCamera}`, localRightCamera),
+    downloadFileFromS3(`${projectId}/${leftAudio}`, localLeftAudio),
+    downloadFileFromS3(`${projectId}/${rightAudio}`, localRightAudio),
   ]);
 
   const outputFilePath = path.join(tempDir, 'final_output.mp4');
@@ -63,8 +63,12 @@ export async function processAndUploadFiles({
 
   // Upload the final video to S3
   const finalVideoBuffer = await fs.promises.readFile(outputFilePath);
-  const finalFileName = `processed/${Date.now()}/final_output.mp4`;
-  const finalVideoUrl = await uploadFileToS3(finalVideoBuffer, finalFileName);
+  const finalFileName = `${projectId}/final_output.mp4`;
+  const finalVideoUrl = await uploadFileToS3(
+    finalVideoBuffer,
+    finalFileName,
+    'video/mp4'
+  );
 
   // Clean up temporary files
   await fs.promises.unlink(localLeftCamera);

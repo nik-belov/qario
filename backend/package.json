@@ -2,6 +2,9 @@
   "name": "backend",
   "module": "index.ts",
   "type": "module",
+  "scripts": {
+    "build": "tsc"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

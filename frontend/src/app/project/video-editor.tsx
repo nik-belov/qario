@@ -3,7 +3,7 @@ import { getProjectById } from '@/server/queries';
 export default async function VideoEditor({
   projectId,
 }: {
-  projectId: number;
+  projectId: string;
 }) {
   // Fetch the project including the associated video files
   const project = await getProjectById(projectId);

@@ -6,6 +6,7 @@ import { projectFiles, projects } from './db/schema';
 import { and, eq } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
+import { createId } from '@paralleldrive/cuid2';
 
 // Function to create a new project
 export const createProject = async (title: string) => {
@@ -21,7 +22,7 @@ export const createProject = async (title: string) => {
 
 // Function to add project files
 export const addProjectFile = async (
-  projectId: number,
+  projectId: string,
   type:
     | 'left_camera'
     | 'main_camera'
@@ -46,13 +47,20 @@ export const addProjectFile = async (
 
   const [newFile] = await db
     .insert(projectFiles)
-    .values({ userId: user.userId, projectId, type, fileKey, url, format })
+    .values({
+      userId: user.userId,
+      projectId,
+      type,
+      fileKey,
+      url,
+      format,
+    })
     .returning();
   return newFile;
 };
 
 export async function updateProjectFinalVideo(
-  projectId: number,
+  projectId: string,
   finalVideoUrl: string
 ) {
   return await db
@@ -63,7 +71,7 @@ export async function updateProjectFinalVideo(
 }
 
 // Function to retrieve files for a project
-export const getProjectFiles = async (projectId: number) => {
+export const getProjectFiles = async (projectId: string) => {
   const user = auth();
   if (!user.userId) throw new Error('Unauthorized');
 
@@ -93,14 +101,9 @@ export async function getMyProjects() {
   return projects;
 }
 
-export async function getProjectById(id: number) {
+export async function getProjectById(projectId: string) {
   const user = auth();
   if (!user.userId) throw new Error('Unauthorized');
-
-  const projectId = Number(id);
-  if (isNaN(projectId)) {
-    throw new Error('Invalid project ID');
-  }
 
   const project = await db
     .select()
@@ -123,13 +126,13 @@ export async function getProjectById(id: number) {
   };
 }
 
-export async function deleteProject(id: number) {
+export async function deleteProject(projectId: string) {
   const user = auth();
   if (!user.userId) throw new Error('Unauthorized');
 
   await db
     .delete(projects)
-    .where(and(eq(projects.id, id), eq(projects.userId, user.userId)));
+    .where(and(eq(projects.id, projectId), eq(projects.userId, user.userId)));
 
   //   analyticsServerClient.capture({
   //     distinctId: user.userId,
@@ -176,10 +179,7 @@ export async function updateProjectTitle({
   title: string;
 }) {
   try {
-    await db
-      .update(projects)
-      .set({ title })
-      .where(eq(projects.id, Number(projectId)));
+    await db.update(projects).set({ title }).where(eq(projects.id, projectId));
 
     revalidatePath('/dashboard');
     revalidatePath(`/project/${projectId}`);

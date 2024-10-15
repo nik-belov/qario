@@ -1,15 +1,12 @@
-import {
-  serial,
-  timestamp,
-  pgTableCreator,
-  varchar,
-  integer,
-} from 'drizzle-orm/pg-core';
+import { timestamp, pgTableCreator, varchar } from 'drizzle-orm/pg-core';
+import { createId } from '@paralleldrive/cuid2';
 
 export const createTable = pgTableCreator((name: string) => `qario_${name}`);
 
 export const projects = createTable('projects', {
-  id: serial('id').primaryKey(),
+  id: varchar('id', { length: 128 })
+    .primaryKey()
+    .$defaultFn(() => createId()),
   userId: varchar('user_id', { length: 255 }).notNull(),
   title: varchar('title', { length: 255 }).notNull(),
   finalVideoUrl: varchar('final_video_url', { length: 255 }),
@@ -18,8 +15,10 @@ export const projects = createTable('projects', {
 
 // Project Files Table
 export const projectFiles = createTable('project_files', {
-  id: serial('id').primaryKey(),
-  projectId: integer('project_id')
+  id: varchar('id', { length: 128 })
+    .primaryKey()
+    .$defaultFn(() => createId()),
+  projectId: varchar('project_id', { length: 128 })
     .notNull()
     .references(() => projects.id),
   userId: varchar('user_id', { length: 255 }).notNull(),

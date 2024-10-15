@@ -33,13 +33,14 @@ export const downloadFileFromS3 = async (
 
 export const uploadFileToS3 = async (
   fileBuffer: Buffer,
-  fileName: string
+  fileName: string,
+  contentType: string
 ): Promise<string> => {
   const params = {
     Bucket: process.env.AWS_S3_BUCKET_NAME,
     Key: fileName,
     Body: fileBuffer,
-    ContentType: 'video/mp4',
+    ContentType: contentType,
   };
 
   const command = new PutObjectCommand(params);
