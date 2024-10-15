@@ -5,6 +5,8 @@ import {
   addProjectFile,
   createProject,
   updateProjectFinalVideo,
+  deleteFile,
+  getProjectFiles,
 } from '@/server/queries';
 import { env } from '@/env';
 import { s3Client } from '@/lib/s3';
@@ -141,4 +143,126 @@ export async function uploadFile(
   }
 
   redirect(`/project/${projectId}`);
+}
+
+export async function cutVideo(
+  projectId: number,
+  cutStartTime: number
+) {
+  try {
+    console.log("CUTTING")
+    const files = await getProjectFiles(projectId);
+    const leftCamera = files.find(f => f.type === 'leftCamera')?.url || '';
+    const mainCamera = files.find(f => f.type === 'mainCamera')?.url || '';
+    const rightCamera = files.find(f => f.type === 'rightCamera')?.url || '';
+
+    const response = await fetch(`${env.BACKEND_URL}/cut`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        leftCamera,
+        mainCamera,
+        rightCamera,
+        cutStartTime,
+      }),
+    });
+
+    console.log("RESPONSE", response)
+
+    if (!response.ok) throw new Error('Failed to cut video');
+
+    const result = await response.json();
+
+    // Upload the new cut videos to S3
+    const uploadPromises = Object.entries(result).map(async ([camera, url]) => {
+      const fileName = `cut-${camera}-${Date.now()}.mp4`;
+      console.log("URL", url)
+      const response = await fetch(url);
+      const buffer = await response.arrayBuffer();
+
+      await uploadFileToS3(Buffer.from(buffer), fileName, 'video/mp4');
+
+      const newUrl = `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com/${fileName}`;
+      await addProjectFile(projectId, camera as any, fileName, newUrl, 'video/mp4');
+
+      return { [camera]: newUrl };
+    });
+
+    const uploadedFiles = await Promise.all(uploadPromises);
+    const newUrls = Object.assign({}, ...uploadedFiles);
+
+    // Update the project's final video URL (assuming we use the main camera as the final video)
+    await updateProjectFinalVideo(projectId, newUrls.mainCamera);
+
+    return { status: 'success', message: 'Video cut successfully', newUrls };
+  } catch (error) {
+    console.error('Error cutting video:', error);
+    return { status: 'error', message: 'Failed to cut video' };
+  }
+}
+
+export async function trimVideo(
+  projectId: number,
+  startTime: number,
+  endTime: number
+) {
+  try {
+    const files = await getProjectFiles(projectId);
+    const leftCamera = files.find(f => f.type === 'leftCamera')?.url || '';
+    const mainCamera = files.find(f => f.type === 'mainCamera')?.url || '';
+    const rightCamera = files.find(f => f.type === 'rightCamera')?.url || '';
+
+    const response = await fetch(`${env.BACKEND_URL}/trim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        leftCamera,
+        mainCamera,
+        rightCamera,
+        startTime,
+        endTime,
+      }),
+    });
+
+    if (!response.ok) throw new Error('Failed to trim video');
+
+    const result = await response.json();
+
+    // Upload the new trimmed videos to S3
+    const uploadPromises = Object.entries(result).map(async ([camera, url]) => {
+      const fileName = `trimmed-${camera}-${Date.now()}.mp4`;
+      const response = await fetch(url);
+      const buffer = await response.arrayBuffer();
+
+      await uploadFileToS3(Buffer.from(buffer), fileName, 'video/mp4');
+
+      const newUrl = `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com/${fileName}`;
+      await addProjectFile(projectId, camera as any, fileName, newUrl, 'video/mp4');
+
+      return { [camera]: newUrl };
+    });
+
+    const uploadedFiles = await Promise.all(uploadPromises);
+    const newUrls = Object.assign({}, ...uploadedFiles);
+
+    // Update the project's final video URL (assuming we use the main camera as the final video)
+    await updateProjectFinalVideo(projectId, newUrls.mainCamera);
+
+    return { status: 'success', message: 'Video trimmed successfully', newUrls };
+  } catch (error) {
+    console.error('Error trimming video:', error);
+    return { status: 'error', message: 'Failed to trim video' };
+  }
+}
+
+export async function deleteFileAction(fileId: number) {
+  try {
+    await deleteFile(fileId);
+    return { status: 'success', message: 'File deleted successfully' };
+  } catch (error) {
+    console.error('Error deleting file:', error);
+    return { status: 'error', message: 'Failed to delete file' };
+  }
 }

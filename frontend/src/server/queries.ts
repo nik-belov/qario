@@ -12,6 +12,8 @@ export const createProject = async (title: string) => {
   const user = auth();
   if (!user.userId) throw new Error('Unauthorized');
 
+  console.log("USER ID", user.userId)
+  
   const [newProject] = await db
     .insert(projects)
     .values({ userId: user.userId, title })
@@ -85,6 +87,7 @@ export async function getMyProjects() {
 
   if (!user.userId) throw new Error('Unauthorized');
 
+  console.log("USER ID", user.userId)
   const projects = await db.query.projects.findMany({
     where: (project, { eq }) => eq(project.userId, user.userId),
     orderBy: (project, { desc }) => desc(project.id),
@@ -94,6 +97,8 @@ export async function getMyProjects() {
 }
 
 export async function getProjectById(id: number) {
+
+  console.log("ID", id)
   const user = auth();
   if (!user.userId) throw new Error('Unauthorized');
 
