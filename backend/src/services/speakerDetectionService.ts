@@ -118,92 +118,65 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
     let filterComplex = '';
     const { width, height } = await getVideoDimensions(inputVideo);
 
-    // New zoom-related variables
-    interface ZoomState {
-      zoomFactor: number;
-      centerX: number;
-      centerY: number;
-    }
-
-    let prevZoomState: ZoomState | null = null;
-    const zoomTransitionDuration = 1.0; // seconds
-    const zoomDelay = 0.5; // seconds
-
-    // Assume we have the original video dimensions
-    const originalAspectRatio = width / height;
-
-    // Define min and max zoom levels
-    const minZoom = 1.0;  // No zoom
-    const maxZoom = 1.5;  // 50% zoom
+    let prevSpeakerId: number | null = null;
+    let prevBbox: { xMin: number, xMax: number, yMin: number, yMax: number } | null = null;
 
     speakingFrames.forEach((frame, index) => {
       const nextFrame = speakingFrames[index + 1] || { startTime: frame.startTime + 0.5 };
       const duration = nextFrame.startTime - frame.startTime;
 
       if (frame.speakerId === -1) {
-        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS[v${index}];`;
-        prevZoomState = null;
+        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS,setsar=1[v${index}];`;
+        prevSpeakerId = null;
+        prevBbox = null;
       } else {
-        const [xMin, yMin] = frame.bbox.topLeft;
-        const [xMax, yMax] = frame.bbox.bottomRight;
-        const bboxWidth = Math.max(0.001, xMax - xMin);
-        const bboxHeight = Math.max(0.001, yMax - yMin);
+        let [xMin, yMin] = frame.bbox.topLeft;
+        let [xMax, yMax] = frame.bbox.bottomRight;
         
-        const centerX = xMin + bboxWidth / 2;
-        const centerY = yMin + bboxHeight / 2;
-        
-        // Calculate the target zoom factor
-        const faceSize = Math.max(bboxWidth, bboxHeight, 0.001);
-        const targetZoomFactor = Math.min(maxZoom, Math.max(minZoom, 0.5 / faceSize));
-        
-        let startZoomState: ZoomState = prevZoomState || { zoomFactor: minZoom, centerX: 0.5, centerY: 0.5 };
+        const expandFactor = 2;
+        const centerX = (xMin + xMax) / 2;
+        const centerY = (yMin + yMax) / 2;
+        const boxWidth = (xMax - xMin) * expandFactor;
+        const boxHeight = (yMax - yMin) * expandFactor * 2;
 
-        const targetZoomState: ZoomState = {
-          zoomFactor: targetZoomFactor,
-          centerX: centerX,
-          centerY: centerY
-        };
+        // Check if we should update the bounding box
+        const shouldUpdate = !prevBbox || 
+                            frame.speakerId !== prevSpeakerId ||
+                            Math.abs(centerX - (prevBbox.xMin + prevBbox.xMax) / 2) > boxWidth / 4 ||
+                            Math.abs(centerY - (prevBbox.yMin + prevBbox.yMax) / 2) > boxHeight / 4;
 
-        const frameInterval = 10; // Apply zoom every 10 frames
-        let zoomCommands = '';
-        const steps = Math.ceil(duration * 30 / frameInterval); // Assuming 30 fps
+        if (shouldUpdate) {
+          xMin = Math.max(0, centerX - boxWidth / 2);
+          xMax = Math.min(width, centerX + boxWidth / 2);
+          yMin = Math.max(0, centerY - boxHeight / 2);
+          yMax = Math.min(height, centerY + boxHeight / 2);
 
-        for (let step = 0; step < steps; step++) {
-          const t = step / (steps - 1);
-          const delayedT = Math.max(0, Math.min(1, (t * duration - zoomDelay) / (duration - zoomDelay)));
-
-          const currentZoomState: ZoomState = {
-            zoomFactor: startZoomState.zoomFactor + (targetZoomState.zoomFactor - startZoomState.zoomFactor) * delayedT,
-            centerX: startZoomState.centerX + (targetZoomState.centerX - startZoomState.centerX) * delayedT,
-            centerY: startZoomState.centerY + (targetZoomState.centerY - startZoomState.centerY) * delayedT
-          };
-
-          currentZoomState.zoomFactor = Math.max(currentZoomState.zoomFactor, 0.001);
-
-          const cropSize = Math.min(1, 1 / currentZoomState.zoomFactor);
-          const cropX = Math.max(0, Math.min(1 - cropSize, currentZoomState.centerX - cropSize / 2));
-          const cropY = Math.max(0, Math.min(1 - cropSize, currentZoomState.centerY - cropSize / 2));
-
-          if (isFinite(cropSize) && isFinite(cropX) && isFinite(cropY)) {
-            const scaledWidth = Math.round(width * cropSize);
-            const scaledHeight = Math.round(height * cropSize);
-            
-            if (scaledWidth > 0 && scaledHeight > 0) {
-              zoomCommands += `crop=iw*${roundToSigFigs(cropSize)}:ih*${roundToSigFigs(cropSize)}:iw*${roundToSigFigs(cropX)}:ih*${roundToSigFigs(cropY)},scale=${scaledWidth}:${scaledHeight},pad=${width}:${height}:(${width}-iw)/2:(${height}-ih)/2,setsar=1:1,`;
-            } else {
-              console.error(`Invalid scale dimensions at step ${step}: ${scaledWidth}x${scaledHeight}. Skipping this frame.`);
-            }
+          prevSpeakerId = frame.speakerId;
+          prevBbox = { xMin, xMax, yMin, yMax };
+          console.log(prevBbox);
+        } else {
+          // Use the previous bounding box
+          if (prevBbox) {
+            ({ xMin, xMax, yMin, yMax } = prevBbox);
           } else {
-            console.error(`Invalid crop values at step ${step}. Skipping this frame.`);
+            // Handle the case where prevBbox is null, if necessary
+            xMin = 0;
+            xMax = width;
+            yMin = 0;
+            yMax = height;
           }
         }
 
-        // Remove trailing comma
-        zoomCommands = zoomCommands.replace(/,$/, '');
+        const cropWidth = xMax - xMin;
+        const cropHeight = yMax - yMin;
+        
+        // Calculate zoom factor
+        const zoomFactor = Math.min(width / cropWidth, height / cropHeight);
 
-        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS,${zoomCommands}[v${index}];`;
-
-        prevZoomState = targetZoomState;
+        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS,`;
+        filterComplex += `crop=${cropWidth}:${cropHeight}:${xMin}:${yMin},`;
+        filterComplex += `scale=${width}:${height}:force_original_aspect_ratio=increase,`;
+        filterComplex += `crop=${width}:${height},setsar=1[v${index}];`;
       }
     });
 
@@ -236,7 +209,7 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
 
         ffmpeg.stderr.on('data', (data) => {
           stderrBuffer += data.toString();
-          console.warn(`ffmpeg stderr: ${data}`);
+          // console.warn(`ffmpeg stderr: ${data}`);
         });
 
         ffmpeg.on('close', (code) => {
