@@ -3,8 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import axios from 'axios'; // New import for axios
-import FormData from 'form-data'; // New import for FormData
+import axios from 'axios';
+import FormData from 'form-data';
+import { processVideo } from './speakerDetectionService';
 
 const execPromise = promisify(exec);
 
@@ -96,21 +97,18 @@ export async function detectSpeakerAndZoom(videoUrl: string): Promise<string> {
   
   const inputVideo = path.join(tempDir, 'input.mp4');
   const outputVideo = path.join(tempDir, 'output.mp4');
+  const framesDir = path.join(tempDir, 'frames');
+
+  await fs.promises.mkdir(framesDir, { recursive: true });
 
   // Download the input video
   await downloadFileFromS3(videoUrl, inputVideo);
 
-  // Use ffmpeg with scene detection and face detection filters
-  const ffmpegCommand = `
-    ffmpeg -i ${inputVideo} -filter_complex "
-      [0:v]select='gt(scene,0.1)',setpts=N/FRAME_RATE/TB[scene];
-      [scene]face,scale=1280:720,crop=640:360:0:0[face];
-      [face]zoompan=z='min(max(1,1.3+0.002*n),1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720[zoomedface];
-      [0:v][zoomedface]overlay='if(gt(scene,0.1),0,NAN)'[out]
-    " -map "[out]" -map 0:a ${outputVideo}
-  `;
+  // Extract frames from the video
+  await execPromise(`ffmpeg -i ${inputVideo} -vf fps=30 ${framesDir}/frame%d.png`);
 
-  await execPromise(ffmpegCommand);
+  // Process the video using speakerDetectionService
+  await processVideo(inputVideo, outputVideo, framesDir);
 
   // Upload the processed video
   const processedVideoBuffer = await fs.promises.readFile(outputVideo);
@@ -124,6 +122,7 @@ export async function detectSpeakerAndZoom(videoUrl: string): Promise<string> {
   // Clean up temporary files
   await fs.promises.unlink(inputVideo);
   await fs.promises.unlink(outputVideo);
+  await fs.promises.rmdir(framesDir, { recursive: true });
 
   console.log('Speaker detection and zoom processing completed:', processedFileName);
   return processedVideoUrl;
