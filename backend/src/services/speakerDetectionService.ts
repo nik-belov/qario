@@ -2,7 +2,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import * as blazeface from '@tensorflow-models/blazeface';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 
 let model: blazeface.BlazeFaceModel;
 
@@ -94,11 +94,13 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
           bbox: { topLeft: [0, 0], bottomRight: [1, 1] } // Full frame
         });
       }
-      console.log(i, detections)
-    
+      // console.log(i, detections)
+      console.log(i, frameFiles.length)
     }
 
+    console.log(DEBUG)
     if (DEBUG) {
+      console.log("hi")
       // Generate debug video with bounding boxes
       const debugOutputVideo = path.join(outputDir, 'debug_' + path.basename(outputVideo));
       await generateDebugVideo(inputVideo, debugOutputVideo, speakingFrames);
@@ -107,20 +109,22 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
 
     // Generate complex filter for zooming and panning
     let filterComplex = '';
+    const { width, height } = await getVideoDimensions(inputVideo);
+
     speakingFrames.forEach((frame, index) => {
       if (frame.speakerId === -1) {
         filterComplex += `[0:v]trim=start=${frame.startTime}:duration=0.5,setpts=PTS-STARTPTS[v${index}];`;
       } else {
-        const [xMin, yMin] = frame.bbox.topLeft;
-        const [xMax, yMax] = frame.bbox.bottomRight;
-        const width = Math.max(0.1, xMax - xMin);
-        const height = Math.max(0.1, yMax - yMin);
-        const zoom = Math.min(2, Math.max(1, 1 / Math.max(width, height)));
-        const centerX = xMin + width / 2;
-        const centerY = yMin + height / 2;
+        const [xMin, yMin] = [frame.bbox.topLeft[0] / width, frame.bbox.topLeft[1] / height];
+        const [xMax, yMax] = [frame.bbox.bottomRight[0] / width, frame.bbox.bottomRight[1] / height];
+        const bboxWidth = Math.max(0.001, xMax - xMin);
+        const bboxHeight = Math.max(0.001, yMax - yMin);
+        const zoom = Math.min(2, Math.max(1, 1 / Math.max(bboxWidth, bboxHeight)));
+        const centerX = xMin + bboxWidth / 2;
+        const centerY = yMin + bboxHeight / 2;
         
         filterComplex += `[0:v]trim=start=${frame.startTime}:duration=0.5,setpts=PTS-STARTPTS,`;
-        filterComplex += `crop=iw:ih:${roundToSigFigs(centerX * 100 - 50/zoom)}*iw/100:${roundToSigFigs(centerY * 100 - 50/zoom)}*ih/100,`;
+        filterComplex += `crop=iw:ih:${roundToSigFigs(centerX - 0.5/zoom)}*iw/100:${roundToSigFigs(centerY - 0.5/zoom)}*ih/100,`;
         filterComplex += `scale=iw*${roundToSigFigs(zoom)}:ih*${roundToSigFigs(zoom)}[v${index}];`;
       }
     });
@@ -131,9 +135,9 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
     // Generate ffmpeg command
     const ffmpegCommand = `ffmpeg -i "${inputVideo}" -filter_complex "${filterComplex}" -map "[outv]" -map 0:a "${outputVideo}"`;
 
-    console.log('ffmpegCommand', ffmpegCommand);
-    console.log('outputVideo', outputVideo);
-    console.log('speakingFrames', speakingFrames);
+    // console.log('ffmpegCommand', ffmpegCommand);
+    // console.log('outputVideo', outputVideo);
+    // console.log('speakingFrames', speakingFrames);
 
     // Execute ffmpeg command
     exec(ffmpegCommand, (error, stdout, stderr) => {
@@ -159,35 +163,99 @@ function roundToSigFigs(num: number, sigFigs: number = 3): number {
 }
 
 async function generateDebugVideo(inputVideo: string, debugOutputVideo: string, speakingFrames: Array<{ startTime: number, speakerId: number, bbox: { topLeft: [number, number], bottomRight: [number, number] } }>) {
+  // First, get the video dimensions
+  const { width, height } = await getVideoDimensions(inputVideo);
+
   let filterComplex = '';
-  
+  let lastSpeakingFrame: typeof speakingFrames[0] | null = null;
+  let lastSpeakingTime = -1;
+
+  console.log(speakingFrames)
+
   speakingFrames.forEach((frame, index) => {
-    const [xMin, yMin] = frame.bbox.topLeft;
-    const [xMax, yMax] = frame.bbox.bottomRight;
+    const duration = index < speakingFrames.length - 1 ? speakingFrames[index + 1].startTime - frame.startTime : 0.5;
     
-    filterComplex += `[0:v]trim=start=${frame.startTime}:duration=0.5,setpts=PTS-STARTPTS,`;
-    filterComplex += `drawbox=x='${xMin}*iw':y='${yMin}*ih':w='(${xMax}-${xMin})*iw':h='(${yMax}-${yMin})*ih':color=red:t=2,`;
-    filterComplex += `drawtext=text='Speaker ${frame.speakerId}':x='${xMin}*iw':y='(${yMin}-0.05)*ih':fontcolor=white:fontsize=24:box=1:boxcolor=red@0.5:boxborderw=5[v${index}];`;
+    if (frame.speakerId !== -1) {
+      lastSpeakingFrame = frame;
+      lastSpeakingTime = frame.startTime;
+    } else if (lastSpeakingFrame && frame.startTime - lastSpeakingTime > 1) {
+      lastSpeakingFrame = null;
+    }
+
+    if (lastSpeakingFrame) {
+      const [xMin, yMin] = lastSpeakingFrame.bbox.topLeft;
+      const [xMax, yMax] = lastSpeakingFrame.bbox.bottomRight;
+      
+      filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS,`;
+      filterComplex += `drawbox=x=${xMin}:y=${yMin}:w=${xMax-xMin}:h=${yMax-yMin}:color=red:t=2,`;
+      filterComplex += `drawtext=text='Speaker ${lastSpeakingFrame.speakerId}':x=${xMin}:y=${yMin-30}:fontcolor=white:fontsize=24:box=1:boxcolor=red@0.5:boxborderw=5[v${index}];`;
+    } else {
+      filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS[v${index}];`;
+    }
   });
 
-  if (speakingFrames.length > 0) {
-    filterComplex += speakingFrames.map((_, index) => `[v${index}]`).join('');
-    filterComplex += `concat=n=${speakingFrames.length}:v=1:a=0[outv]`;
-  } else {
-    filterComplex = '[0:v]null[outv]';
-  }
+  filterComplex += speakingFrames.map((_, index) => `[v${index}]`).join('');
+  filterComplex += `concat=n=${speakingFrames.length}:v=1:a=0[outv]`;
 
-  const ffmpegCommand = `ffmpeg -i "${inputVideo}" -filter_complex "${filterComplex}" -map "[outv]" -map 0:a -t ${speakingFrames.length * 0.5} "${debugOutputVideo}"`;
+  const ffmpegCommand = [
+    '-y',
+    '-i', inputVideo,
+    '-filter_complex', filterComplex,
+    '-map', '[outv]',
+    '-map', '0:a',
+    debugOutputVideo
+  ];
 
   return new Promise((resolve, reject) => {
-    exec(ffmpegCommand, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error generating debug video: ${error.message}`);
-        console.error(`stderr: ${stderr}`);
-        reject(error);
+    const ffmpeg = spawn('ffmpeg', ffmpegCommand);
+
+    let stdoutData = '';
+    let stderrData = '';
+
+    ffmpeg.stdout.on('data', (data) => {
+      stdoutData += data;
+    });
+
+    ffmpeg.stderr.on('data', (data) => {
+      stderrData += data;
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code === 0) {
+        console.log('Debug video generated successfully');
+        resolve('Debug video generated successfully');
       } else {
-        console.log(`Debug video generated successfully`);
-        resolve(stdout);
+        console.error(`FFmpeg process exited with code ${code}`);
+        console.error('stdout:', stdoutData);
+        console.error('stderr:', stderrData);
+        reject(new Error(`FFmpeg process exited with code ${code}`));
+      }
+    });
+  });
+}
+
+// Helper function to get video dimensions
+function getVideoDimensions(videoPath: string): Promise<{width: number, height: number}> {
+  return new Promise((resolve, reject) => {
+    const ffprobe = spawn('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-count_packets', '-show_entries', 'stream=width,height',
+      '-of', 'csv=p=0',
+      videoPath
+    ]);
+
+    let output = '';
+    ffprobe.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    ffprobe.on('close', (code) => {
+      if (code === 0) {
+        const [width, height] = output.trim().split(',').map(Number);
+        resolve({width, height});
+      } else {
+        reject(new Error(`ffprobe process exited with code ${code}`));
       }
     });
   });
