@@ -133,11 +133,11 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
         let [xMin, yMin] = frame.bbox.topLeft;
         let [xMax, yMax] = frame.bbox.bottomRight;
         
-        const expandFactor = 2;
+        const expandFactor = 2.75;
         const centerX = (xMin + xMax) / 2;
         const centerY = (yMin + yMax) / 2;
         const boxWidth = (xMax - xMin) * expandFactor;
-        const boxHeight = (yMax - yMin) * expandFactor * 2;
+        const boxHeight = (yMax - yMin) * expandFactor;
 
         // Check if we should update the bounding box
         const shouldUpdate = !prevBbox || 
