@@ -2,7 +2,7 @@ import * as tf from '@tensorflow/tfjs-node';
 import * as blazeface from '@tensorflow-models/blazeface';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec, spawn } from 'child_process';
+import { spawn } from 'child_process';
 
 let model: blazeface.BlazeFaceModel;
 
@@ -56,27 +56,26 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
     const frameFiles = fs.readdirSync(framesDir).sort();
     let prevLandmarks: Array<Array<[number, number]>> = [];
     let speakingFrames: Array<{ startTime: number, speakerId: number, bbox: { topLeft: [number, number], bottomRight: [number, number] } }> = [];
+    let lastMovementTime = 0;
 
     // Analyze frames twice per second
     for (let i = 0; i < frameFiles.length; i += 15) {
       const framePath = path.join(framesDir, frameFiles[i]);
       const detections = await detectFacesAndLandmarks(framePath);
 
-      let isSomeoneSpeaking = false;
+      let maxMovement = 0;
+      let speakerId = -1;
+      let speakerBbox = { topLeft: [0, 0], bottomRight: [1, 1] };
 
       for (let j = 0; j < detections.length; j++) {
         const landmarks = detections[j].landmarks;
 
         if (prevLandmarks[j]) {
           const movement = analyzeLipMovement(prevLandmarks[j], landmarks);
-          if (movement > 0.02) { 
-            speakingFrames.push({
-              startTime: i / 30,
-              speakerId: j,
-              bbox: detections[j].boundingBox
-            });
-            isSomeoneSpeaking = true;
-            break;
+          if (movement > maxMovement) {
+            maxMovement = movement;
+            speakerId = j;
+            speakerBbox = detections[j].boundingBox;
           }
         }
 
@@ -87,22 +86,30 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
         }
       }
 
-      if (!isSomeoneSpeaking) {
-        speakingFrames.push({
-          startTime: i / 30, // Convert frame index to seconds
-          speakerId: -1, // Indicates no one is speaking
-          bbox: { topLeft: [0, 0], bottomRight: [1, 1] } // Full frame
-        });
+      const currentTime = i / 30;
+      
+      if (maxMovement > 0.02) {
+        lastMovementTime = currentTime;
       }
-      // console.log(i, detections)
-      console.log(i, frameFiles.length)
+
+      if (currentTime - lastMovementTime > 1) {
+        speakerId = -1;
+        speakerBbox = { topLeft: [0, 0], bottomRight: [1, 1] };
+      }
+
+      speakingFrames.push({
+        startTime: currentTime,
+        speakerId: speakerId,
+        bbox: {
+          topLeft: [speakerBbox.topLeft[0], speakerBbox.topLeft[1]],
+          bottomRight: [speakerBbox.bottomRight[0], speakerBbox.bottomRight[1]]
+        }
+      });
     }
 
-    console.log(DEBUG)
     if (DEBUG) {
-      console.log("hi")
       // Generate debug video with bounding boxes
-      const debugOutputVideo = path.join(outputDir, 'debug_' + path.basename(outputVideo));
+      const debugOutputVideo = path.join(outputDir, 'debug_bounding_boxes_' + path.basename(outputVideo));
       await generateDebugVideo(inputVideo, debugOutputVideo, speakingFrames);
       console.log(`Debug video saved to: ${debugOutputVideo}`);
     }
@@ -111,47 +118,162 @@ export async function processVideo(inputVideo: string, outputVideo: string, fram
     let filterComplex = '';
     const { width, height } = await getVideoDimensions(inputVideo);
 
+    // New zoom-related variables
+    interface ZoomState {
+      zoomFactor: number;
+      centerX: number;
+      centerY: number;
+    }
+
+    let prevZoomState: ZoomState | null = null;
+    const zoomTransitionDuration = 1.0; // seconds
+    const zoomDelay = 0.5; // seconds
+
+    // Assume we have the original video dimensions
+    const originalAspectRatio = width / height;
+
+    // Define min and max zoom levels
+    const minZoom = 1.0;  // No zoom
+    const maxZoom = 1.5;  // 50% zoom
+
     speakingFrames.forEach((frame, index) => {
+      const nextFrame = speakingFrames[index + 1] || { startTime: frame.startTime + 0.5 };
+      const duration = nextFrame.startTime - frame.startTime;
+
       if (frame.speakerId === -1) {
-        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=0.5,setpts=PTS-STARTPTS[v${index}];`;
+        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS[v${index}];`;
+        prevZoomState = null;
       } else {
-        const [xMin, yMin] = [frame.bbox.topLeft[0] / width, frame.bbox.topLeft[1] / height];
-        const [xMax, yMax] = [frame.bbox.bottomRight[0] / width, frame.bbox.bottomRight[1] / height];
+        const [xMin, yMin] = frame.bbox.topLeft;
+        const [xMax, yMax] = frame.bbox.bottomRight;
         const bboxWidth = Math.max(0.001, xMax - xMin);
         const bboxHeight = Math.max(0.001, yMax - yMin);
-        const zoom = Math.min(2, Math.max(1, 1 / Math.max(bboxWidth, bboxHeight)));
+        
         const centerX = xMin + bboxWidth / 2;
         const centerY = yMin + bboxHeight / 2;
         
-        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=0.5,setpts=PTS-STARTPTS,`;
-        filterComplex += `crop=iw:ih:${roundToSigFigs(centerX - 0.5/zoom)}*iw/100:${roundToSigFigs(centerY - 0.5/zoom)}*ih/100,`;
-        filterComplex += `scale=iw*${roundToSigFigs(zoom)}:ih*${roundToSigFigs(zoom)}[v${index}];`;
+        // Calculate the target zoom factor
+        const faceSize = Math.max(bboxWidth, bboxHeight, 0.001);
+        const targetZoomFactor = Math.min(maxZoom, Math.max(minZoom, 0.5 / faceSize));
+        
+        let startZoomState: ZoomState = prevZoomState || { zoomFactor: minZoom, centerX: 0.5, centerY: 0.5 };
+
+        const targetZoomState: ZoomState = {
+          zoomFactor: targetZoomFactor,
+          centerX: centerX,
+          centerY: centerY
+        };
+
+        const frameInterval = 10; // Apply zoom every 10 frames
+        let zoomCommands = '';
+        const steps = Math.ceil(duration * 30 / frameInterval); // Assuming 30 fps
+
+        for (let step = 0; step < steps; step++) {
+          const t = step / (steps - 1);
+          const delayedT = Math.max(0, Math.min(1, (t * duration - zoomDelay) / (duration - zoomDelay)));
+
+          const currentZoomState: ZoomState = {
+            zoomFactor: startZoomState.zoomFactor + (targetZoomState.zoomFactor - startZoomState.zoomFactor) * delayedT,
+            centerX: startZoomState.centerX + (targetZoomState.centerX - startZoomState.centerX) * delayedT,
+            centerY: startZoomState.centerY + (targetZoomState.centerY - startZoomState.centerY) * delayedT
+          };
+
+          currentZoomState.zoomFactor = Math.max(currentZoomState.zoomFactor, 0.001);
+
+          const cropSize = Math.min(1, 1 / currentZoomState.zoomFactor);
+          const cropX = Math.max(0, Math.min(1 - cropSize, currentZoomState.centerX - cropSize / 2));
+          const cropY = Math.max(0, Math.min(1 - cropSize, currentZoomState.centerY - cropSize / 2));
+
+          if (isFinite(cropSize) && isFinite(cropX) && isFinite(cropY)) {
+            const scaledWidth = Math.round(width * cropSize);
+            const scaledHeight = Math.round(height * cropSize);
+            
+            if (scaledWidth > 0 && scaledHeight > 0) {
+              zoomCommands += `crop=iw*${roundToSigFigs(cropSize)}:ih*${roundToSigFigs(cropSize)}:iw*${roundToSigFigs(cropX)}:ih*${roundToSigFigs(cropY)},scale=${scaledWidth}:${scaledHeight},pad=${width}:${height}:(${width}-iw)/2:(${height}-ih)/2,setsar=1:1,`;
+            } else {
+              console.error(`Invalid scale dimensions at step ${step}: ${scaledWidth}x${scaledHeight}. Skipping this frame.`);
+            }
+          } else {
+            console.error(`Invalid crop values at step ${step}. Skipping this frame.`);
+          }
+        }
+
+        // Remove trailing comma
+        zoomCommands = zoomCommands.replace(/,$/, '');
+
+        filterComplex += `[0:v]trim=start=${frame.startTime}:duration=${duration},setpts=PTS-STARTPTS,${zoomCommands}[v${index}];`;
+
+        prevZoomState = targetZoomState;
       }
     });
 
     filterComplex += speakingFrames.map((_, index) => `[v${index}]`).join('');
     filterComplex += `concat=n=${speakingFrames.length}:v=1:a=0[outv]`;
 
-    // Generate ffmpeg command
-    const ffmpegCommand = `ffmpeg -i "${inputVideo}" -filter_complex "${filterComplex}" -map "[outv]" -map 0:a "${outputVideo}"`;
-
-    // console.log('ffmpegCommand', ffmpegCommand);
-    // console.log('outputVideo', outputVideo);
-    // console.log('speakingFrames', speakingFrames);
+    // Generate ffmpeg command arguments
+    const ffmpegArgs = [
+      '-y',
+      '-i', inputVideo,
+      '-filter_complex', filterComplex,
+      '-map', '[outv]',
+      '-map', '0:a',
+      outputVideo
+    ];
 
     // Execute ffmpeg command
-    exec(ffmpegCommand, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Error: ${error.message}`);
-        return;
-      }
-      if (stderr) {
-        console.error(`stderr: ${stderr}`);
-      }
-      console.log(`stdout: ${stdout}`);
-    });
+    console.log("Starting ffmpeg command execution...");
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+
+        let stdoutBuffer = '';
+        let stderrBuffer = '';
+
+        ffmpeg.stdout.on('data', (data) => {
+          stdoutBuffer += data.toString();
+          console.log(`ffmpeg stdout: ${data}`);
+        });
+
+        ffmpeg.stderr.on('data', (data) => {
+          stderrBuffer += data.toString();
+          console.warn(`ffmpeg stderr: ${data}`);
+        });
+
+        ffmpeg.on('close', (code) => {
+          if (code === 0) {
+            console.log('ffmpeg process completed successfully');
+            resolve();
+          } else {
+            console.error(`ffmpeg process exited with code ${code}`);
+            console.error('stdout:', stdoutBuffer);
+            console.error('stderr:', stderrBuffer);
+            reject(new Error(`ffmpeg process exited with code ${code}`));
+          }
+        });
+
+        ffmpeg.on('error', (err) => {
+          console.error('Failed to start ffmpeg process:', err);
+          reject(err);
+        });
+      });
+      console.log("ffmpeg command executed successfully");
+    } catch (error) {
+      console.error("Error during ffmpeg command execution:", error);
+      throw error;
+    }
+
+    // Log filename and save locally if DEBUG is true
+    if (DEBUG) {
+      const debugZoomOutputVideo = path.join(outputDir, 'debug_zoom_' + path.basename(outputVideo));
+      fs.copyFileSync(outputVideo, debugZoomOutputVideo);
+      console.log(`Debug zoom video saved to: ${debugZoomOutputVideo}`);
+    }
+
+    console.log(`Final video with zooms saved to: ${outputVideo}`);
+
   } catch (error) {
     console.error("Error processing video:", error);
+    throw error;
   }
 }
 
@@ -169,8 +291,6 @@ async function generateDebugVideo(inputVideo: string, debugOutputVideo: string, 
   let filterComplex = '';
   let lastSpeakingFrame: typeof speakingFrames[0] | null = null;
   let lastSpeakingTime = -1;
-
-  console.log(speakingFrames)
 
   speakingFrames.forEach((frame, index) => {
     const duration = index < speakingFrames.length - 1 ? speakingFrames[index + 1].startTime - frame.startTime : 0.5;
