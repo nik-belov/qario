@@ -28,7 +28,8 @@ export const addProjectFile = async (
     | 'main_camera'
     | 'right_camera'
     | 'left_audio'
-    | 'right_audio',
+    | 'right_audio'
+    | 'zoom_video',
   fileKey: string,
   url: string,
   format: string
@@ -61,11 +62,12 @@ export const addProjectFile = async (
 
 export async function updateProjectFinalVideo(
   projectId: string,
-  finalVideoUrl: string
+  processedVideoUrl: string
 ) {
+  console.log('updateProjectFinalVideo', processedVideoUrl);
   return await db
     .update(projects)
-    .set({ finalVideoUrl })
+    .set({ finalVideoUrl: processedVideoUrl })
     .where(eq(projects.id, projectId))
     .returning();
 }

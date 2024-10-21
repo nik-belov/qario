@@ -11,6 +11,7 @@ import {
 import { Trash2 } from 'lucide-react';
 import { deleteProject, getMyProjects } from '@/server/queries';
 import CreatePodcastButton from './create-podcast-button';
+import CreateZoomButton from './create-zoom-button';
 
 export async function Dashboard() {
   const projects = await getMyProjects();
@@ -20,6 +21,7 @@ export async function Dashboard() {
       <div className='flex justify-between items-center mb-6'>
         <h2 className='text-3xl font-bold'>Your Projects</h2>
         <CreatePodcastButton />
+        <CreateZoomButton />
       </div>
 
       {/* Search bar */}

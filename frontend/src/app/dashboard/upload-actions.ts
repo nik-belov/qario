@@ -147,3 +147,81 @@ export async function uploadFile(
 
   redirect(`/project/${projectId}`);
 }
+
+export async function uploadZoomFile(
+  state: { message: string; status: string },
+  formData: FormData
+) {
+  const projectName = formData.get('projectName') as string;
+  if (!projectName) {
+    return { status: 'error', message: 'Project name is required.' };
+  }
+
+  // Create the project and get the project ID
+  const project = await createProject(projectName);
+  const projectId = project.id;
+
+  const zoomVideo = formData.get('zoomVideo') as File | null;
+  if (!zoomVideo || !(zoomVideo instanceof File) || zoomVideo.size === 0) {
+    return {
+      status: 'error',
+      message: 'Missing or invalid file for Zoom video',
+    };
+  }
+
+  const buffer = Buffer.from(await zoomVideo.arrayBuffer());
+
+  // Upload file to S3
+  const fileKey = await uploadFileToS3(
+    buffer,
+    zoomVideo.name,
+    zoomVideo.type,
+    projectId
+  );
+
+  //   Store file metadata in the database
+  const fileMetadata = await addProjectFile(
+    projectId,
+    'zoom_video',
+    fileKey,
+    `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com/${fileKey}`,
+    zoomVideo.type
+  );
+
+  console.log('Zoom video metadata added to database');
+
+  // Make POST request to backend server
+  try {
+    const response = await fetch(`${env.BACKEND_URL}/detect-and-zoom`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        projectId,
+        userId: auth().userId,
+        videoUrl: `${projectId}/${fileKey}`,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to start processing');
+    }
+
+    const data = await response.json();
+    if (data.processedVideoUrl) {
+      // Save finalVideoUrl in the database
+      await updateProjectFinalVideo(projectId, data.processedVideoUrl);
+      console.log('Final video URL saved in the database');
+    } else {
+      console.warn('Final video URL not received from backend');
+    }
+
+    console.log('Processing request sent to backend');
+  } catch (error) {
+    console.error('Error sending processing request:', error);
+    return { status: 'error', message: 'Failed to start processing' };
+  }
+
+  redirect(`/project/${projectId}`);
+}
