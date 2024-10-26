@@ -1,10 +1,11 @@
 import sys
 import cv2
 import numpy as np
-from scipy.signal import correlate
+from scipy.signal import correlate, butter, filtfilt, medfilt
 from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
-import os  # Make sure to import os for file existence checks
-from speaker_detection_zoom import detect_faces_fast, bbox_iou
+from moviepy.audio.AudioClip import AudioArrayClip
+import os
+from speaker_detection_zoom import detect_faces_fast
 
 def sync_audio_with_video(video_path, audio_path):
     """
@@ -134,6 +135,183 @@ def detect_mouth_movement(frame):
     
     return mouth_variance
 
+def smart_audio_merge(audio1, audio2, sample_rate=44100):
+    """
+    Intelligently merge two audio streams using advanced processing techniques
+    """
+    def audio_to_array(audio_clip):
+        if audio_clip is None:
+            return np.array([])
+        chunks = list(audio_clip.iter_chunks(chunksize=1024))
+        if not chunks:
+            return np.array([])
+        return np.concatenate(chunks)
+
+    array1 = audio_to_array(audio1)
+    array2 = audio_to_array(audio2)
+
+    # Ensure same length
+    max_length = max(len(array1), len(array2))
+    array1 = np.pad(array1, ((0, max_length - len(array1)), (0, 0)) if len(array1.shape) > 1 else (0, max_length - len(array1)))
+    array2 = np.pad(array2, ((0, max_length - len(array2)), (0, 0)) if len(array2.shape) > 1 else (0, max_length - len(array2)))
+
+    # Convert to mono if stereo
+    if len(array1.shape) > 1:
+        array1 = np.mean(array1, axis=1)
+    if len(array2.shape) > 1:
+        array2 = np.mean(array2, axis=1)
+
+    # Process in windows
+    window_size = 1024
+    hop_length = 512
+    merged = np.zeros_like(array1)
+
+    for i in range(0, len(array1) - window_size, hop_length):
+        window1 = array1[i:i+window_size]
+        window2 = array2[i:i+window_size]
+
+        # Calculate SNR for each window
+        noise_floor1 = np.mean(np.sort(np.abs(window1))[:window_size//10])
+        noise_floor2 = np.mean(np.sort(np.abs(window2))[:window_size//10])
+        snr1 = np.mean(np.abs(window1)) / (noise_floor1 + 1e-10)
+        snr2 = np.mean(np.abs(window2)) / (noise_floor2 + 1e-10)
+
+        # Calculate spectral content
+        spec1 = np.abs(np.fft.rfft(window1))
+        spec2 = np.abs(np.fft.rfft(window2))
+        
+        # Calculate spectral flatness (measure of how noise-like the signal is)
+        flatness1 = np.exp(np.mean(np.log(spec1 + 1e-10))) / (np.mean(spec1) + 1e-10)
+        flatness2 = np.exp(np.mean(np.log(spec2 + 1e-10))) / (np.mean(spec2) + 1e-10)
+
+        # Calculate dynamic weights based on multiple factors
+        weight1 = snr1 * (1 - flatness1)
+        weight2 = snr2 * (1 - flatness2)
+        
+        # Normalize weights
+        total_weight = weight1 + weight2
+        if total_weight > 0:
+            weight1 /= total_weight
+            weight2 /= total_weight
+        else:
+            weight1 = weight2 = 0.5
+
+        # Apply spectral masking
+        freq_mask = np.where(spec1 > spec2, weight1, weight2)
+        merged_spec = spec1 * freq_mask + spec2 * (1 - freq_mask)
+        
+        # Reconstruct time domain signal
+        merged_window = np.fft.irfft(merged_spec * np.exp(1j * np.angle(np.fft.rfft(window1))))
+        
+        # Overlap-add
+        merged[i:i+window_size] += merged_window * np.hanning(window_size)
+
+    # Normalize output
+    merged = merged / np.max(np.abs(merged))
+
+    # Apply subtle enhancement
+    merged = enhance_mixed_audio(merged, sample_rate)
+
+    # Convert to stereo
+    merged_stereo = np.column_stack((merged, merged))
+
+    return AudioArrayClip(merged_stereo, fps=sample_rate)
+
+def enhance_mixed_audio(audio_array, sample_rate):
+    """
+    Apply enhancement to the mixed audio
+    """
+    # Apply gentle noise reduction
+    noise_reduced = medfilt(audio_array, kernel_size=3)
+    
+    # Apply bandpass filter to focus on speech frequencies (80Hz - 8kHz)
+    nyquist = sample_rate / 2
+    low_cutoff = 80 / nyquist
+    high_cutoff = 8000 / nyquist
+    b, a = butter(4, [low_cutoff, high_cutoff], btype='band')
+    filtered = filtfilt(b, a, noise_reduced)
+    
+    # Dynamic range compression
+    threshold = 0.3
+    ratio = 0.6
+    makeup_gain = 1.2
+    
+    above_threshold = filtered > threshold
+    filtered[above_threshold] = threshold + (filtered[above_threshold] - threshold) * ratio
+    filtered *= makeup_gain
+    
+    # Soft limiting to prevent clipping
+    filtered = np.tanh(filtered)
+    
+    return filtered
+
+def find_audio_peaks(audio_array):
+    """
+    Find significant peaks in audio signal
+    """
+    # Convert stereo to mono if necessary
+    if len(audio_array.shape) > 1:
+        audio_mono = np.mean(audio_array, axis=1)
+    else:
+        audio_mono = audio_array
+    
+    # Calculate amplitude envelope
+    window_size = 1024
+    amplitude_envelope = np.array([max(audio_mono[i:i+window_size]) 
+                                 for i in range(0, len(audio_mono), window_size)])
+    
+    # Find peaks above threshold
+    threshold = np.mean(amplitude_envelope) + 2 * np.std(amplitude_envelope)
+    peaks = np.where(amplitude_envelope > threshold)[0]
+    
+    return peaks * window_size
+
+def find_sync_offset(audio1, audio2):
+    """
+    Find timing offset between two audio streams using cross-correlation
+    """
+    # Convert to mono if stereo
+    if len(audio1.shape) > 1:
+        audio1 = np.mean(audio1, axis=1)
+    if len(audio2.shape) > 1:
+        audio2 = np.mean(audio2, axis=1)
+    
+    # Normalize audio signals
+    audio1 = (audio1 - np.mean(audio1)) / (np.std(audio1) + 1e-8)
+    audio2 = (audio2 - np.mean(audio2)) / (np.std(audio2) + 1e-8)
+    
+    # Compute cross-correlation
+    correlation = correlate(audio1, audio2, mode='full', method='fft')
+    max_idx = np.argmax(np.abs(correlation))
+    
+    # Convert samples to seconds
+    offset = (max_idx - len(audio1)) / 44100  # assuming 44.1kHz sample rate
+    
+    return offset
+
+def resize_clip(clip, target_width, target_height):
+    """
+    Resize a clip to match the target width and height while maintaining aspect ratio.
+    """
+    aspect_ratio = clip.w / clip.h
+    target_ratio = target_width / target_height
+
+    if aspect_ratio > target_ratio:
+        # Clip is wider, crop the sides
+        new_width = int(clip.h * target_ratio)
+        crop_amount = (clip.w - new_width) // 2
+        resized_clip = clip.crop(x1=crop_amount, x2=clip.w-crop_amount)
+    elif aspect_ratio < target_ratio:
+        # Clip is taller, crop the top and bottom
+        new_height = int(clip.w / target_ratio)
+        crop_amount = (clip.h - new_height) // 2
+        resized_clip = clip.crop(y1=crop_amount, y2=clip.h-crop_amount)
+    else:
+        # Aspect ratios match, no cropping needed
+        resized_clip = clip
+
+    return resized_clip.resize((target_width, target_height)).set_audio(clip.audio)
+
 def process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, speaker_bias={'left': 1.2, 'main': 1.0, 'right': 1.0}):
     try:
         print("Starting video processing...")
@@ -149,6 +327,15 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         # Sync cameras
         print("Syncing all cameras together...")
         left_synced, main_synced, right_synced = sync_cameras(left_synced, main_synced, right_synced)
+
+        # Use smart audio merging
+        print("Merging audio streams...")
+        merged_audio = smart_audio_merge(left_synced.audio, right_synced.audio)
+
+        # Apply merged audio to all clips
+        left_synced = left_synced.set_audio(merged_audio)
+        main_synced = main_synced.set_audio(merged_audio)
+        right_synced = right_synced.set_audio(merged_audio)
 
         # Get minimum duration considering both video and audio for each clip
         left_duration = min(left_synced.duration, left_synced.audio.duration if left_synced.audio else float('inf'))
@@ -267,73 +454,6 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
     except Exception as e:
         print(f"Error in process_videos: {str(e)}")
         raise
-
-def find_audio_peaks(audio_array):
-    """
-    Find significant peaks in audio signal
-    """
-    # Convert stereo to mono if necessary
-    if len(audio_array.shape) > 1:
-        audio_mono = np.mean(audio_array, axis=1)
-    else:
-        audio_mono = audio_array
-    
-    # Calculate amplitude envelope
-    window_size = 1024
-    amplitude_envelope = np.array([max(audio_mono[i:i+window_size]) 
-                                 for i in range(0, len(audio_mono), window_size)])
-    
-    # Find peaks above threshold
-    threshold = np.mean(amplitude_envelope) + 2 * np.std(amplitude_envelope)
-    peaks = np.where(amplitude_envelope > threshold)[0]
-    
-    return peaks * window_size
-
-def find_sync_offset(audio1, audio2):
-    """
-    Find timing offset between two audio streams using cross-correlation
-    """
-    # Convert to mono if stereo
-    if len(audio1.shape) > 1:
-        audio1 = np.mean(audio1, axis=1)
-    if len(audio2.shape) > 1:
-        audio2 = np.mean(audio2, axis=1)
-    
-    # Normalize audio signals
-    audio1 = (audio1 - np.mean(audio1)) / (np.std(audio1) + 1e-8)
-    audio2 = (audio2 - np.mean(audio2)) / (np.std(audio2) + 1e-8)
-    
-    # Compute cross-correlation
-    correlation = correlate(audio1, audio2, mode='full', method='fft')
-    max_idx = np.argmax(np.abs(correlation))
-    
-    # Convert samples to seconds
-    offset = (max_idx - len(audio1)) / 44100  # assuming 44.1kHz sample rate
-    
-    return offset
-
-def resize_clip(clip, target_width, target_height):
-    """
-    Resize a clip to match the target width and height while maintaining aspect ratio.
-    """
-    aspect_ratio = clip.w / clip.h
-    target_ratio = target_width / target_height
-
-    if aspect_ratio > target_ratio:
-        # Clip is wider, crop the sides
-        new_width = int(clip.h * target_ratio)
-        crop_amount = (clip.w - new_width) // 2
-        resized_clip = clip.crop(x1=crop_amount, x2=clip.w-crop_amount)
-    elif aspect_ratio < target_ratio:
-        # Clip is taller, crop the top and bottom
-        new_height = int(clip.w / target_ratio)
-        crop_amount = (clip.h - new_height) // 2
-        resized_clip = clip.crop(y1=crop_amount, y2=clip.h-crop_amount)
-    else:
-        # Aspect ratios match, no cropping needed
-        resized_clip = clip
-
-    return resized_clip.resize((target_width, target_height)).set_audio(clip.audio)
 
 if __name__ == "__main__":
     if len(sys.argv) != 8:
