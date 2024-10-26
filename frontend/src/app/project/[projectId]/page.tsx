@@ -9,9 +9,9 @@ import ProjectTitleEditor from '../title-edit';
 export default async function PreviewPage({
   params,
 }: {
-  params: { projectId: string };
+  params: Promise<{ projectId: string }>;
 }) {
-  const { projectId } = params;
+  const projectId = (await params).projectId;
   const project = await getProjectById(projectId);
 
   return (
