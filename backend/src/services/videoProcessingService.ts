@@ -453,3 +453,130 @@ async function determineSegmentsToKeep(
   );
   return segments;
 }
+
+export async function trimVideo({
+  videoUrl,
+  startTime,
+  endTime,
+  projectId,
+}: {
+  videoUrl: string;
+  startTime: number;
+  endTime: number;
+  projectId: string;
+}): Promise<string> {
+  const tempDir = '/tmp/video_trim';
+  await fs.promises.mkdir(tempDir, { recursive: true });
+
+  const inputVideo = path.join(tempDir, 'input.mp4');
+  const outputVideo = path.join(tempDir, 'output.mp4');
+
+  try {
+    // Download video from S3
+    await downloadFileFromS3(videoUrl, inputVideo);
+
+    // Calculate duration
+    const duration = endTime - startTime;
+
+    // Trim video using FFmpeg
+    const trimCommand = `
+        ffmpeg -y -i ${inputVideo} -ss ${startTime} -t ${duration} \
+        -c:v libx264 -c:a aac -avoid_negative_ts make_zero ${outputVideo}
+      `;
+    await execPromise(trimCommand);
+
+    // Upload the result to S3
+    const outputBuffer = await fs.promises.readFile(outputVideo);
+    const outputFileName = `${projectId}/trimmed_${Date.now()}.mp4`;
+    const finalVideoUrl = await uploadFileToS3(
+      outputBuffer,
+      outputFileName,
+      'video/mp4'
+    );
+
+    // Clean up temporary files
+    await Promise.all([
+      fs.promises.unlink(inputVideo),
+      fs.promises.unlink(outputVideo),
+    ]);
+
+    return finalVideoUrl;
+  } catch (error) {
+    console.error('Error in trimVideo:', error);
+    throw error;
+  }
+}
+
+export async function appendVideoSection({
+  sourceVideoUrl,
+  targetVideoUrl,
+  startTime,
+  duration,
+  projectId,
+}: {
+  sourceVideoUrl: string;
+  targetVideoUrl: string;
+  startTime: number;
+  duration: number;
+  projectId: string;
+}): Promise<string> {
+  const tempDir = '/tmp/video_append';
+  await fs.promises.mkdir(tempDir, { recursive: true });
+
+  const sourceVideo = path.join(tempDir, 'source.mp4');
+  const targetVideo = path.join(tempDir, 'target.mp4');
+  const clipVideo = path.join(tempDir, 'clip.mp4');
+  const outputVideo = path.join(tempDir, 'output.mp4');
+
+  try {
+    // Download both videos from S3
+    await Promise.all([
+      downloadFileFromS3(sourceVideoUrl, sourceVideo),
+      downloadFileFromS3(targetVideoUrl, targetVideo),
+    ]);
+
+    // Extract the clip from source video
+    const extractCommand = `
+        ffmpeg -y -i ${sourceVideo} -ss ${startTime} -t ${duration} \
+        -c:v libx264 -c:a aac ${clipVideo}
+      `;
+    await execPromise(extractCommand);
+
+    // Create a concat file
+    const concatFile = path.join(tempDir, 'concat.txt');
+    await fs.promises.writeFile(
+      concatFile,
+      `file '${targetVideo}'\nfile '${clipVideo}'`
+    );
+
+    // Concatenate videos
+    const concatCommand = `
+        ffmpeg -y -f concat -safe 0 -i ${concatFile} \
+        -c:v libx264 -c:a aac ${outputVideo}
+      `;
+    await execPromise(concatCommand);
+
+    // Upload the result to S3
+    const outputBuffer = await fs.promises.readFile(outputVideo);
+    const outputFileName = `${projectId}/appended_output.mp4`;
+    const finalVideoUrl = await uploadFileToS3(
+      outputBuffer,
+      outputFileName,
+      'video/mp4'
+    );
+
+    // Clean up temporary files
+    await Promise.all([
+      fs.promises.unlink(sourceVideo),
+      fs.promises.unlink(targetVideo),
+      fs.promises.unlink(clipVideo),
+      fs.promises.unlink(outputVideo),
+      fs.promises.unlink(concatFile),
+    ]);
+
+    return finalVideoUrl;
+  } catch (error) {
+    console.error('Error in appendVideoSection:', error);
+    throw error;
+  }
+}

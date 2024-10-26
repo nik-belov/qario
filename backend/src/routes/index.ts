@@ -5,6 +5,8 @@ import {
   detectSpeakerAndZoom,
   trimVideoBasedOnContent,
   analyzeVideoContent,
+  trimVideo,
+  appendVideoSection,
 } from '../services/videoProcessingService';
 import { config } from 'dotenv';
 
@@ -178,6 +180,67 @@ app.post('/create-podcast', async (req: any, res: any) => {
   } catch (error) {
     console.error('Error creating podcast:', error);
     return res.status(500).json({ error: 'Failed to create podcast' });
+  }
+});
+
+app.post('/trim-video', async (req: any, res: any) => {
+  const { videoUrl, startTime, endTime, projectId } = req.body;
+
+  if (
+    !videoUrl ||
+    startTime === undefined ||
+    endTime === undefined ||
+    !projectId
+  ) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  if (startTime >= endTime) {
+    return res
+      .status(400)
+      .json({ error: 'Start time must be less than end time' });
+  }
+
+  try {
+    const trimmedVideoUrl = await trimVideo({
+      videoUrl,
+      startTime,
+      endTime,
+      projectId,
+    });
+    return res.json({ trimmedVideoUrl });
+  } catch (error) {
+    console.error('Error trimming video:', error);
+    return res.status(500).json({ error: 'Failed to trim video' });
+  }
+});
+
+app.post('/append-video-section', async (req: any, res: any) => {
+  const { sourceVideoUrl, targetVideoUrl, startTime, duration, projectId } =
+    req.body;
+
+  if (
+    !sourceVideoUrl ||
+    !targetVideoUrl ||
+    startTime === undefined ||
+    !duration ||
+    !projectId
+  ) {
+    return res.status(400).json({ error: 'Missing required parameters' });
+  }
+
+  try {
+    const finalVideoUrl = await appendVideoSection({
+      sourceVideoUrl,
+      targetVideoUrl,
+      startTime,
+      duration,
+      projectId,
+    });
+    return res.json({ finalVideoUrl });
+  } catch (error) {
+    console.error('Error appending video section:', error);
+    return res.status(500).json({ error: 'Failed to append video section' });
   }
 });
 
