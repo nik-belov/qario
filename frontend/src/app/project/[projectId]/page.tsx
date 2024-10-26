@@ -11,7 +11,7 @@ export default async function PreviewPage({
 }: {
   params: { projectId: string };
 }) {
-  const projectId = params.projectId;
+  const { projectId } = params;
   const project = await getProjectById(projectId);
 
   return (

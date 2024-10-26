@@ -1,13 +1,11 @@
 import { Dashboard } from './dashboard';
-import { auth, clerkClient } from '@clerk/nextjs/server';
+import { currentUser } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
 
 export default async function DashboardPage() {
-  const user = auth();
-  if (!user.userId) redirect('/sign-in');
-
-  const userInfo = await clerkClient.users.getUser(user.userId);
+  const user = await currentUser();
+  if (!user) redirect('/sign-in');
 
   return (
     <div className='flex h-screen bg-gray-100'>
@@ -25,7 +23,7 @@ export default async function DashboardPage() {
       <aside className='w-64 bg-white p-6 shadow-md'>
         <div className='flex items-center space-x-4 mb-6'>
           <Image
-            src={userInfo.imageUrl}
+            src={user.imageUrl}
             width={48}
             height={48}
             alt='Profile picture'
@@ -33,10 +31,10 @@ export default async function DashboardPage() {
           />
           <div>
             <h3 className='font-bold'>
-              {userInfo.firstName} {userInfo.lastName}
+              {user.firstName} {user.lastName}
             </h3>
             <p className='text-sm text-gray-500'>
-              {userInfo.emailAddresses[0].emailAddress}
+              {user.emailAddresses[0].emailAddress}
             </p>
           </div>
         </div>

@@ -42,17 +42,26 @@ def process_video(input_video, output_video):
         print_flush(f"Processing video: {input_video}")
         print_flush(f"Output video: {output_video}")
 
+        # 10% progress for initialization
+        print_flush(json.dumps({"progress": 10}))
+
         width, height, total_frames, fps = get_video_info(input_video)
         print_flush(f"Video properties: FPS={fps}, Width={width}, Height={height}, Total Frames={total_frames}")
+
+        # 15% progress after getting video info
+        print_flush(json.dumps({"progress": 15}))
 
         cap = cv2.VideoCapture(input_video)
         frames_to_process = range(0, total_frames, int(fps/2))  # Process 2 frames per second
         speaking_frames = []
+        total_frames_to_process = len(frames_to_process)
 
         prev_landmarks = None
         for i, frame_number in enumerate(frames_to_process):
-            if i % 10 == 0:  # Print progress every 10 frames
-                print_flush(f"Processing frame {i}/{len(frames_to_process)}")
+            # Calculate progress from 20% to 70% during frame processing
+            progress = 20 + int((i / total_frames_to_process) * 50)
+            if i % 5 == 0:  # Update progress every 5 frames
+                print_flush(json.dumps({"progress": progress}))
             
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
             ret, frame = cap.read()
@@ -89,9 +98,17 @@ def process_video(input_video, output_video):
 
         cap.release()
 
+        # 75% progress after frame processing
+        print_flush(json.dumps({"progress": 75}))
+
         # Generate ffmpeg filter complex
         filter_complex = ""
         for i, frame in enumerate(speaking_frames):
+            # Calculate progress from 75% to 85% during filter complex generation
+            progress = 75 + int((i / len(speaking_frames)) * 10)
+            if i % 5 == 0:  # Update progress every 5 frames
+                print_flush(json.dumps({"progress": progress}))
+                
             next_frame = speaking_frames[i+1] if i+1 < len(speaking_frames) else {"start_time": frame["start_time"] + 0.5}
             duration = next_frame["start_time"] - frame["start_time"]
 
@@ -114,10 +131,14 @@ def process_video(input_video, output_video):
             filter_complex += f"scale={width}:{height}:force_original_aspect_ratio=increase,"
             filter_complex += f"crop={width}:{height},setsar=1[v{i}];"
 
+        # 85% progress before ffmpeg
+        print_flush(json.dumps({"progress": 85}))
+
         filter_complex += "".join(f"[v{i}]" for i in range(len(speaking_frames)))
         filter_complex += f"concat=n={len(speaking_frames)}:v=1:a=0[outv]"
 
         # Run ffmpeg command
+        print_flush("Running ffmpeg command")
         ffmpeg_cmd = [
             "ffmpeg", "-y",
             "-i", input_video,
@@ -127,12 +148,16 @@ def process_video(input_video, output_video):
             output_video
         ]
 
-        print_flush("Running ffmpeg command")
+        # 90% progress during ffmpeg processing
+        print_flush(json.dumps({"progress": 90}))
         subprocess.run(ffmpeg_cmd, check=True)
 
         print_flush("Video processing completed successfully")
+        # 100% progress when complete
+        print_flush(json.dumps({"progress": 100}))
         return {"processedVideoUrl": output_video}
     except Exception as e:
+        print_flush(json.dumps({"progress": "error"}))
         print_flush(f"Error processing video: {str(e)}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)

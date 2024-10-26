@@ -10,12 +10,12 @@ import { createId } from '@paralleldrive/cuid2';
 
 // Function to create a new project
 export const createProject = async (title: string) => {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const [newProject] = await db
     .insert(projects)
-    .values({ userId: user.userId, title })
+    .values({ userId, title })
     .returning();
   return newProject;
 };
@@ -34,12 +34,12 @@ export const addProjectFile = async (
   url: string,
   format: string
 ) => {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const project = await db.query.projects.findFirst({
     where: (project, { eq }) =>
-      and(eq(project.id, projectId), eq(project.userId, user.userId)),
+      and(eq(project.id, projectId), eq(project.userId, userId)),
   });
 
   if (!project) {
@@ -49,7 +49,7 @@ export const addProjectFile = async (
   const [newFile] = await db
     .insert(projectFiles)
     .values({
-      userId: user.userId,
+      userId,
       projectId,
       type,
       fileKey,
@@ -64,7 +64,6 @@ export async function updateProjectFinalVideo(
   projectId: string,
   processedVideoUrl: string
 ) {
-  console.log('updateProjectFinalVideo', processedVideoUrl);
   return await db
     .update(projects)
     .set({ finalVideoUrl: processedVideoUrl })
@@ -74,12 +73,12 @@ export async function updateProjectFinalVideo(
 
 // Function to retrieve files for a project
 export const getProjectFiles = async (projectId: string) => {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const project = await db.query.projects.findFirst({
     where: (project, { eq }) =>
-      and(eq(project.id, projectId), eq(project.userId, user.userId)),
+      and(eq(project.id, projectId), eq(project.userId, userId)),
   });
 
   if (!project) throw new Error('Project not found or unauthorized');
@@ -91,12 +90,11 @@ export const getProjectFiles = async (projectId: string) => {
 };
 
 export async function getMyProjects() {
-  const user = auth();
-
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const projects = await db.query.projects.findMany({
-    where: (project, { eq }) => eq(project.userId, user.userId),
+    where: (project, { eq }) => eq(project.userId, userId),
     orderBy: (project, { desc }) => desc(project.id),
   });
 
@@ -104,8 +102,8 @@ export async function getMyProjects() {
 }
 
 export async function getProjectById(projectId: string) {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const project = await db
     .select()
@@ -115,7 +113,7 @@ export async function getProjectById(projectId: string) {
 
   if (!project[0]) throw new Error('Project not found');
 
-  if (project[0].userId !== user.userId) throw new Error('Unauthorized');
+  if (project[0].userId !== userId) throw new Error('Unauthorized');
 
   const files = await db
     .select()
@@ -129,12 +127,12 @@ export async function getProjectById(projectId: string) {
 }
 
 export async function deleteProject(projectId: string) {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   await db
     .delete(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.userId, user.userId)));
+    .where(and(eq(projects.id, projectId), eq(projects.userId, userId)));
 
   //   analyticsServerClient.capture({
   //     distinctId: user.userId,
@@ -148,8 +146,8 @@ export async function deleteProject(projectId: string) {
 }
 
 export async function getFilesByProject(project: typeof projects.$inferSelect) {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
   const files = await db.query.projectFiles.findMany({
     where: (file, { eq }) => eq(file.projectId, project.id),
@@ -160,10 +158,10 @@ export async function getFilesByProject(project: typeof projects.$inferSelect) {
 }
 
 export async function deleteFile(file: typeof projectFiles.$inferSelect) {
-  const user = auth();
-  if (!user.userId) throw new Error('Unauthorized');
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
 
-  if (file.userId !== user.userId) throw new Error('Unauthorized');
+  if (file.userId !== userId) throw new Error('Unauthorized');
 
   await db.delete(projectFiles).where(eq(projectFiles.id, file.id));
 
@@ -180,6 +178,9 @@ export async function updateProjectTitle({
   projectId: string;
   title: string;
 }) {
+  const { userId } = await auth();
+  if (!userId) throw new Error('Unauthorized');
+
   try {
     await db.update(projects).set({ title }).where(eq(projects.id, projectId));
 

@@ -16,7 +16,6 @@ export const projects = createTable('projects', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-// Project Files Table
 export const projectFiles = createTable('project_files', {
   id: varchar('id', { length: 128 })
     .primaryKey()

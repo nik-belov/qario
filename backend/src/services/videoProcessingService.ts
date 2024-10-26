@@ -7,6 +7,10 @@ import axios from 'axios';
 import FormData from 'form-data';
 import { runPythonScript } from './pythonBridge';
 import os from 'os';
+import { spawn } from 'child_process';
+import { eq } from 'drizzle-orm';
+import { projects } from '../db/schema';
+import { db } from '../db';
 
 const execPromise = promisify(exec);
 
@@ -91,6 +95,16 @@ export async function processAndUploadFiles({
   return finalVideoUrl;
 }
 
+interface PythonProgress {
+  progress: number | 'error';
+}
+
+interface PythonResult {
+  processedVideoUrl: string;
+}
+
+type PythonOutput = PythonProgress | PythonResult;
+
 export async function detectSpeakerAndZoom(
   videoUrl: string,
   projectId: string
@@ -105,26 +119,87 @@ export async function detectSpeakerAndZoom(
     await downloadFileFromS3(videoUrl, inputVideo);
     console.log(`Input video downloaded to: ${inputVideo}`);
 
-    const result = await runPythonScript('speaker_detection.py', [
-      inputVideo,
-      outputVideo,
-      projectId,
-    ]);
+    const result = await new Promise<PythonResult>((resolve, reject) => {
+      const pythonProcess = spawn('python3', [
+        path.join(__dirname, '..', 'python', 'speaker_detection.py'),
+        inputVideo,
+        outputVideo,
+        projectId,
+      ]);
+
+      let lastJsonOutput: PythonResult | null = null;
+
+      pythonProcess.stdout.on('data', async (data) => {
+        const output = data.toString();
+        console.log('Python output:', output);
+
+        // Try to parse each line as JSON
+        const lines = output.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          try {
+            const jsonData = JSON.parse(line) as PythonOutput;
+
+            // Handle progress updates
+            if ('progress' in jsonData) {
+              await db
+                .update(projects)
+                .set({ processingProgress: String(jsonData.progress) })
+                .where(eq(projects.id, projectId))
+                .execute();
+            }
+
+            // Handle final result
+            if ('processedVideoUrl' in jsonData) {
+              lastJsonOutput = jsonData;
+            }
+          } catch (e) {
+            // Not JSON data, just regular console output
+            continue;
+          }
+        }
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        console.error('Python error:', data.toString());
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (code === 0 && lastJsonOutput) {
+          resolve(lastJsonOutput);
+        } else {
+          reject(
+            new Error(
+              code === 0
+                ? 'No valid output received from Python script'
+                : `Python script exited with code ${code}`
+            )
+          );
+        }
+      });
+    });
 
     const outputBuffer = await fs.promises.readFile(outputVideo);
     const processedFileName = path.basename(outputVideo);
+    const s3Key = `${projectId}/${processedFileName}`;
     const processedVideoUrl = await uploadFileToS3(
       outputBuffer,
-      `${projectId}/${processedFileName}`,
+      s3Key,
       'video/mp4'
     );
-    console.log(`Processed video uploaded successfully: ${processedVideoUrl}`);
 
     await fs.promises.unlink(inputVideo);
     await fs.promises.unlink(outputVideo);
 
     return processedVideoUrl;
   } catch (error) {
+    await db
+      .update(projects)
+      .set({ processingProgress: 'err' })
+      .where(eq(projects.id, projectId))
+      .execute();
+
     console.error('Error in detectSpeakerAndZoom:', error);
     throw error;
   }

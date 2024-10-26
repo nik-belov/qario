@@ -10,6 +10,10 @@ import { env } from '@/env';
 import { s3Client } from '@/lib/s3';
 import { redirect } from 'next/navigation';
 import { auth } from '@clerk/nextjs/server';
+import { projects } from '@/server/db/schema';
+import { eq } from 'drizzle-orm';
+import { db } from '@/server/db';
+import { supabase } from '@/lib/supabase';
 
 // Helper function to upload file to S3
 async function uploadFileToS3(
@@ -109,41 +113,41 @@ export async function uploadFile(
   console.log('All files uploaded successfully.');
 
   // Make POST request to backend server
-  try {
-    const response = await fetch(`${env.BACKEND_URL}/process`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        projectId,
-        userId: auth().userId,
-        leftCamera: uploadedFiles.leftCamera,
-        mainCamera: uploadedFiles.mainCamera,
-        rightCamera: uploadedFiles.rightCamera,
-        leftAudio: uploadedFiles.leftAudio,
-        rightAudio: uploadedFiles.rightAudio,
-      }),
-    });
+  //   try {
+  //     const response = await fetch(`${env.BACKEND_URL}/process`, {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //       },
+  //       body: JSON.stringify({
+  //         projectId,
+  //         userId: auth().userId,
+  //         leftCamera: uploadedFiles.leftCamera,
+  //         mainCamera: uploadedFiles.mainCamera,
+  //         rightCamera: uploadedFiles.rightCamera,
+  //         leftAudio: uploadedFiles.leftAudio,
+  //         rightAudio: uploadedFiles.rightAudio,
+  //       }),
+  //     });
 
-    if (!response.ok) {
-      throw new Error('Failed to start processing');
-    }
+  //     if (!response.ok) {
+  //       throw new Error('Failed to start processing');
+  //     }
 
-    const data = await response.json();
-    if (data.finalVideoUrl) {
-      // Save finalVideoUrl in the database
-      await updateProjectFinalVideo(projectId, data.finalVideoUrl);
-      console.log('Final video URL saved in the database');
-    } else {
-      console.warn('Final video URL not received from backend');
-    }
+  //     const data = await response.json();
+  //     if (data.finalVideoUrl) {
+  //       // Save finalVideoUrl in the database
+  //       await updateProjectFinalVideo(projectId, data.finalVideoUrl);
+  //       console.log('Final video URL saved in the database');
+  //     } else {
+  //       console.warn('Final video URL not received from backend');
+  //     }
 
-    console.log('Processing request sent to backend');
-  } catch (error) {
-    console.error('Error sending processing request:', error);
-    return { status: 'error', message: 'Failed to start processing' };
-  }
+  //     console.log('Processing request sent to backend');
+  //   } catch (error) {
+  //     console.error('Error sending processing request:', error);
+  //     return { status: 'error', message: 'Failed to start processing' };
+  //   }
 
   redirect(`/project/${projectId}`);
 }
@@ -152,6 +156,9 @@ export async function uploadZoomFile(
   state: { message: string; status: string },
   formData: FormData
 ) {
+  const { userId } = await auth();
+  if (!userId) redirect('/sign-in');
+
   const projectName = formData.get('projectName') as string;
   if (!projectName) {
     return { status: 'error', message: 'Project name is required.' };
@@ -199,7 +206,7 @@ export async function uploadZoomFile(
       },
       body: JSON.stringify({
         projectId,
-        userId: auth().userId,
+        userId,
         videoUrl: `${projectId}/${fileKey}`,
       }),
     });

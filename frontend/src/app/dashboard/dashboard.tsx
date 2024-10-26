@@ -12,6 +12,8 @@ import { Trash2 } from 'lucide-react';
 import { deleteProject, getMyProjects } from '@/server/queries';
 import CreatePodcastButton from './create-podcast-button';
 import CreateZoomButton from './create-zoom-button';
+import { ProgressBar } from './progress-bar';
+import { DashboardProgress } from './dashboard-client';
 
 export async function Dashboard() {
   const projects = await getMyProjects();
@@ -23,17 +25,6 @@ export async function Dashboard() {
         <CreatePodcastButton />
         <CreateZoomButton />
       </div>
-
-      {/* Search bar */}
-      {/* <div className='mb-6'>
-        <Input
-          type='search'
-          placeholder='Search projects...'
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className='w-full'
-        />
-      </div> */}
 
       {/* Project grid */}
       <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>
@@ -75,6 +66,7 @@ export async function Dashboard() {
           </Link>
         ))}
       </div>
+      <DashboardProgress projectId={projects[0]?.id} />
     </div>
   );
 }
