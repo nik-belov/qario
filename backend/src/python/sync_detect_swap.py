@@ -135,6 +135,29 @@ def detect_mouth_movement(frame):
     
     return mouth_variance
 
+def enhance_mixed_audio(audio_array, sample_rate, noise_reduction=0.1, low_cut=100, high_cut=7000, compression_threshold=0.5, compression_ratio=0.7):
+    """
+    Apply gentle enhancement to the mixed audio
+    """
+    # Apply subtle noise reduction
+    noise_reduced = audio_array * (1 - noise_reduction) + medfilt(audio_array, kernel_size=3) * noise_reduction
+    
+    # Apply bandpass filter to focus on speech frequencies
+    nyquist = sample_rate / 2
+    low_cutoff = low_cut / nyquist
+    high_cutoff = high_cut / nyquist
+    b, a = butter(2, [low_cutoff, high_cutoff], btype='band')
+    filtered = filtfilt(b, a, noise_reduced)
+    
+    # Gentle dynamic range compression
+    above_threshold = filtered > compression_threshold
+    filtered[above_threshold] = compression_threshold + (filtered[above_threshold] - compression_threshold) * compression_ratio
+    
+    # Normalize
+    filtered = filtered / np.max(np.abs(filtered))
+    
+    return filtered
+
 def smart_audio_merge(audio1, audio2, sample_rate=44100):
     """
     Intelligently merge two audio streams using advanced processing techniques
@@ -209,41 +232,18 @@ def smart_audio_merge(audio1, audio2, sample_rate=44100):
     # Normalize output
     merged = merged / np.max(np.abs(merged))
 
-    # Apply subtle enhancement
-    merged = enhance_mixed_audio(merged, sample_rate)
+    # Apply subtle enhancement with gentler settings
+    merged = enhance_mixed_audio(merged, sample_rate,
+                                 noise_reduction=0.05,
+                                 low_cut=80,
+                                 high_cut=8000,
+                                 compression_threshold=0.7,
+                                 compression_ratio=0.8)
 
     # Convert to stereo
     merged_stereo = np.column_stack((merged, merged))
 
     return AudioArrayClip(merged_stereo, fps=sample_rate)
-
-def enhance_mixed_audio(audio_array, sample_rate):
-    """
-    Apply enhancement to the mixed audio
-    """
-    # Apply gentle noise reduction
-    noise_reduced = medfilt(audio_array, kernel_size=3)
-    
-    # Apply bandpass filter to focus on speech frequencies (80Hz - 8kHz)
-    nyquist = sample_rate / 2
-    low_cutoff = 80 / nyquist
-    high_cutoff = 8000 / nyquist
-    b, a = butter(4, [low_cutoff, high_cutoff], btype='band')
-    filtered = filtfilt(b, a, noise_reduced)
-    
-    # Dynamic range compression
-    threshold = 0.3
-    ratio = 0.6
-    makeup_gain = 1.2
-    
-    above_threshold = filtered > threshold
-    filtered[above_threshold] = threshold + (filtered[above_threshold] - threshold) * ratio
-    filtered *= makeup_gain
-    
-    # Soft limiting to prevent clipping
-    filtered = np.tanh(filtered)
-    
-    return filtered
 
 def find_audio_peaks(audio_array):
     """
