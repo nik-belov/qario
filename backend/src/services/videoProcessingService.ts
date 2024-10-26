@@ -2,7 +2,7 @@ import { downloadFileFromS3, uploadFileToS3 } from './s3Service';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import { promisify } from 'util';
+import { log, promisify } from 'util';
 import axios from 'axios';
 import FormData from 'form-data';
 import { runPythonScript } from './pythonBridge';
@@ -105,7 +105,7 @@ export async function detectSpeakerAndZoom(
     await downloadFileFromS3(videoUrl, inputVideo);
     console.log(`Input video downloaded to: ${inputVideo}`);
 
-    const result = await runPythonScript('speaker_detection.py', [
+    const result = await runPythonScript('speaker_detection_zoom.py', [
       inputVideo,
       outputVideo,
       projectId,
@@ -126,6 +126,85 @@ export async function detectSpeakerAndZoom(
     return processedVideoUrl;
   } catch (error) {
     console.error('Error in detectSpeakerAndZoom:', error);
+    throw error;
+  }
+}
+
+export async function syncDetectAndSwap({
+  projectId,
+  userId,
+  leftCamera,
+  mainCamera,
+  rightCamera,
+  leftAudio,
+  rightAudio,
+}: {
+  projectId: string;
+  userId: string;
+  leftCamera: string;
+  mainCamera: string;
+  rightCamera: string;
+  leftAudio: string;
+  rightAudio: string;
+}): Promise<string> {
+  const tempDir = path.join(os.tmpdir(), 'sync_detect_swap');
+  await fs.promises.mkdir(tempDir, { recursive: true });
+
+  const localLeftCamera = path.join(tempDir, 'left_camera.mp4');
+  const localMainCamera = path.join(tempDir, 'main_camera.mp4');
+  const localRightCamera = path.join(tempDir, 'right_camera.mp4');
+  const localLeftAudio = path.join(tempDir, 'left_audio.wav');
+  const localRightAudio = path.join(tempDir, 'right_audio.wav');
+  const outputVideo = path.join(tempDir, `${projectId}_processed.mp4`);
+
+  try {
+    // Download all input files
+    await Promise.all([
+      downloadFileFromS3(leftCamera, localLeftCamera),
+      downloadFileFromS3(mainCamera, localMainCamera),
+      downloadFileFromS3(rightCamera, localRightCamera),
+      downloadFileFromS3(leftAudio, localLeftAudio),
+      downloadFileFromS3(rightAudio, localRightAudio),
+    ]);
+
+    console.log('All input files downloaded successfully');
+
+    // Run the Python script for sync detection and camera swapping
+    const result = await runPythonScript('sync_detect_swap.py', [
+      localLeftCamera,
+      localMainCamera,
+      localRightCamera,
+      localLeftAudio,
+      localRightAudio,
+      outputVideo,
+      projectId,
+    ]);
+
+    console.log('Python script executed successfully:', result);
+
+    // Upload the processed video
+    const outputBuffer = await fs.promises.readFile(outputVideo);
+    const processedFileName = `${projectId}_synced_and_swapped.mp4`;
+    const processedVideoUrl = await uploadFileToS3(
+      outputBuffer,
+      `${projectId}/${processedFileName}`,
+      'video/mp4'
+    );
+    console.log(`Processed video uploaded successfully: ${processedVideoUrl}`);
+
+    // Clean up temporary files
+    await Promise.all([
+      fs.promises.unlink(localLeftCamera),
+      fs.promises.unlink(localMainCamera),
+      fs.promises.unlink(localRightCamera),
+      fs.promises.unlink(localLeftAudio),
+      fs.promises.unlink(localRightAudio),
+      fs.promises.unlink(outputVideo),
+    ]);
+
+    return processedVideoUrl;
+  } catch (error) {
+    console.error('Error in syncDetectAndSwap:', error);
     throw error;
   }
 }
