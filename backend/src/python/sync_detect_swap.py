@@ -135,7 +135,12 @@ def detect_mouth_movement(frame):
     
     return mouth_variance
 
-def enhance_mixed_audio(audio_array, sample_rate, noise_reduction=0.1, low_cut=100, high_cut=7000, compression_threshold=0.5, compression_ratio=0.7):
+def enhance_mixed_audio(audio_array, sample_rate, 
+                       noise_reduction=0.1, 
+                       low_cut=100, 
+                       high_cut=7000, 
+                       compression_threshold=0.5, 
+                       compression_ratio=0.7):
     """
     Apply gentle enhancement to the mixed audio
     """
@@ -158,7 +163,12 @@ def enhance_mixed_audio(audio_array, sample_rate, noise_reduction=0.1, low_cut=1
     
     return filtered
 
-def smart_audio_merge(audio1, audio2, sample_rate=44100):
+def smart_audio_merge(audio1, audio2, sample_rate=44100,
+                     noise_reduction=0.05,
+                     low_cut=80,
+                     high_cut=8000,
+                     compression_threshold=0.7,
+                     compression_ratio=0.8):
     """
     Intelligently merge two audio streams using advanced processing techniques
     """
@@ -232,13 +242,13 @@ def smart_audio_merge(audio1, audio2, sample_rate=44100):
     # Normalize output
     merged = merged / np.max(np.abs(merged))
 
-    # Apply subtle enhancement with gentler settings
+    # Apply enhancement with provided settings
     merged = enhance_mixed_audio(merged, sample_rate,
-                                 noise_reduction=0.05,
-                                 low_cut=80,
-                                 high_cut=8000,
-                                 compression_threshold=0.7,
-                                 compression_ratio=0.8)
+                               noise_reduction=noise_reduction,
+                               low_cut=low_cut,
+                               high_cut=high_cut,
+                               compression_threshold=compression_threshold,
+                               compression_ratio=compression_ratio)
 
     # Convert to stereo
     merged_stereo = np.column_stack((merged, merged))
@@ -312,7 +322,24 @@ def resize_clip(clip, target_width, target_height):
 
     return resized_clip.resize((target_width, target_height)).set_audio(clip.audio)
 
-def process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, speaker_bias={'left': 1.2, 'main': 1.0, 'right': 1.0}):
+def process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, 
+                  speaker_bias={'left': 1.2, 'main': 1.0, 'right': 1.0},
+                  min_clip_duration=20.0,
+                  audio_params=None):
+    """
+    Process videos with configurable parameters
+    audio_params: dict with keys for audio processing settings
+    """
+    # Set default audio parameters if none provided
+    default_audio_params = {
+        'noise_reduction': 0.05,
+        'low_cut': 80,
+        'high_cut': 8000,
+        'compression_threshold': 0.7,
+        'compression_ratio': 0.8
+    }
+    audio_params = audio_params or default_audio_params
+
     try:
         print("Starting video processing...")
         
@@ -328,9 +355,12 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         print("Syncing all cameras together...")
         left_synced, main_synced, right_synced = sync_cameras(left_synced, main_synced, right_synced)
 
-        # Use smart audio merging
-        print("Merging audio streams...")
-        merged_audio = smart_audio_merge(left_synced.audio, right_synced.audio)
+        # Use smart audio merging with provided parameters
+        merged_audio = smart_audio_merge(
+            left_synced.audio, 
+            right_synced.audio,
+            **audio_params
+        )
 
         # Apply merged audio to all clips
         left_synced = left_synced.set_audio(merged_audio)
@@ -359,7 +389,7 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         clips = []
         current_speaker = 1  # Start with main camera
         segment_start = 0
-        min_clip_duration = 1.0  # Minimum clip duration in seconds
+        min_clip_duration = min_clip_duration  # Minimum clip duration in seconds
 
         print(f"Processing frames for {min_duration} seconds...")
         for t in np.arange(0, min_duration, 1/main_synced.fps):
@@ -456,29 +486,74 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         raise
 
 if __name__ == "__main__":
-    if len(sys.argv) != 8:
-        print("Usage: script.py left_camera main_camera right_camera left_audio right_audio output_path project_id")
+    if len(sys.argv) < 8:
+        print("Usage: script.py left_camera main_camera right_camera left_audio right_audio output_path project_id [processing_params]")
         sys.exit(1)
         
+    # Get the basic parameters
+    left_camera, main_camera, right_camera, left_audio, right_audio, output_path, project_id = sys.argv[1:8]
+    
+    # Initialize default parameters
+    speaker_bias = {'left': 1.2, 'main': 1.0, 'right': 1.0}
+    min_clip_duration = 20.0
+    audio_params = {
+        'noise_reduction': 0.05,
+        'low_cut': 80,
+        'high_cut': 8000,
+        'compression_threshold': 0.7,
+        'compression_ratio': 0.8
+    }
+    
+    # If processing parameters are provided as JSON string
+    if len(sys.argv) > 8:
+        try:
+            import json
+            processing_params = json.loads(sys.argv[8])
+            
+            # Update speaker bias if provided
+            if 'speaker_bias' in processing_params:
+                speaker_bias.update(processing_params['speaker_bias'])
+            
+            # Update min clip duration if provided
+            if 'min_clip_duration' in processing_params:
+                min_clip_duration = float(processing_params['min_clip_duration'])
+            
+            # Update audio parameters if provided
+            if 'audio_params' in processing_params:
+                audio_params.update(processing_params['audio_params'])
+                
+            print("Using custom processing parameters:")
+            print(f"Speaker bias: {speaker_bias}")
+            print(f"Min clip duration: {min_clip_duration}")
+            print(f"Audio parameters: {audio_params}")
+        except Exception as e:
+            print(f"Error parsing processing parameters: {str(e)}")
+            print("Using default parameters")
+    
     # print durations of each file
-    print(f"Left camera duration: {VideoFileClip(sys.argv[1]).duration}")
-    print(f"Main camera duration: {VideoFileClip(sys.argv[2]).duration}")
-    print(f"Right camera duration: {VideoFileClip(sys.argv[3]).duration}")
-    print(f"Left audio duration: {AudioFileClip(sys.argv[4]).duration}")
-    print(f"Right audio duration: {AudioFileClip(sys.argv[5]).duration}")
+    print(f"Left camera duration: {VideoFileClip(left_camera).duration}")
+    print(f"Main camera duration: {VideoFileClip(main_camera).duration}")
+    print(f"Right camera duration: {VideoFileClip(right_camera).duration}")
+    print(f"Left audio duration: {AudioFileClip(left_audio).duration}")
+    print(f"Right audio duration: {AudioFileClip(right_audio).duration}")
     
     # Validate input files exist
-    input_files = sys.argv[1:6]
+    input_files = [left_camera, main_camera, right_camera, left_audio, right_audio]
     for file_path in input_files:
         if not os.path.exists(file_path):
             print(f"Error: File not found: {file_path}")
             sys.exit(1)
-            
-    left_camera, main_camera, right_camera, left_audio, right_audio, output_path, project_id = sys.argv[1:]
     
-    # Default bias towards showing the left speaker more frequently
-    # NOTE: Should probably make this a parameters to the endpoint.
-    speaker_bias = {'left': 1.2, 'main': 1.0, 'right': 1.0}
+    process_videos(
+        left_camera, 
+        main_camera, 
+        right_camera, 
+        left_audio, 
+        right_audio, 
+        output_path,
+        speaker_bias=speaker_bias,
+        min_clip_duration=min_clip_duration,
+        audio_params=audio_params
+    )
     
-    process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, speaker_bias)
     print(f"Processing completed. Output saved to {output_path}")

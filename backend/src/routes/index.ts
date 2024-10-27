@@ -84,21 +84,12 @@ app.post('/sync-detect-and-swap-cams', async (req: any, res: any) => {
     rightCamera,
     leftAudio,
     rightAudio,
+    processingParams
   } = req.body;
 
-  if (
-    !projectId ||
-    !userId ||
-    !leftCamera ||
-    !mainCamera ||
-    !rightCamera ||
-    !leftAudio ||
-    !rightAudio
-  ) {
+  if (!projectId || !userId || !leftCamera || !mainCamera || !rightCamera || !leftAudio || !rightAudio) {
     return res.status(400).json({ error: 'Missing required data' });
   }
-
-  console.log('Received request:', req.body);
 
   try {
     const processedVideoUrl = await syncDetectAndSwap({
@@ -109,6 +100,7 @@ app.post('/sync-detect-and-swap-cams', async (req: any, res: any) => {
       rightCamera,
       leftAudio,
       rightAudio,
+      processingParams
     });
     return res.json({ processedVideoUrl });
   } catch (error) {

@@ -130,6 +130,26 @@ export async function detectSpeakerAndZoom(
   }
 }
 
+interface AudioParams {
+  noise_reduction?: number;
+  low_cut?: number;
+  high_cut?: number;
+  compression_threshold?: number;
+  compression_ratio?: number;
+}
+
+interface SpeakerBias {
+  left?: number;
+  main?: number;
+  right?: number;
+}
+
+interface ProcessingParams {
+  speaker_bias?: SpeakerBias;
+  min_clip_duration?: number;
+  audio_params?: AudioParams;
+}
+
 export async function syncDetectAndSwap({
   projectId,
   userId,
@@ -138,6 +158,7 @@ export async function syncDetectAndSwap({
   rightCamera,
   leftAudio,
   rightAudio,
+  processingParams
 }: {
   projectId: string;
   userId: string;
@@ -146,6 +167,7 @@ export async function syncDetectAndSwap({
   rightCamera: string;
   leftAudio: string;
   rightAudio: string;
+  processingParams?: ProcessingParams;
 }): Promise<string> {
   const tempDir = path.join(os.tmpdir(), 'sync_detect_swap');
   await fs.promises.mkdir(tempDir, { recursive: true });
@@ -170,7 +192,7 @@ export async function syncDetectAndSwap({
     console.log('All input files downloaded successfully');
 
     // Run the Python script for sync detection and camera swapping
-    const result = await runPythonScript('sync_detect_swap.py', [
+    const args = [
       localLeftCamera,
       localMainCamera,
       localRightCamera,
@@ -178,7 +200,14 @@ export async function syncDetectAndSwap({
       localRightAudio,
       outputVideo,
       projectId,
-    ]);
+    ];
+
+    // Add processing parameters if provided
+    if (processingParams) {
+      args.push(JSON.stringify(processingParams));
+    }
+
+    const result = await runPythonScript('sync_detect_swap.py', args);
 
     console.log('Python script executed successfully:', result);
 

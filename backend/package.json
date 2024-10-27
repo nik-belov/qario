@@ -3,6 +3,7 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
+    "dev": "bun run start.ts",
     "build": "tsc",
     "create-venv": "python3 -m venv venv || python -m venv venv",
     "install-py-deps": "./venv/bin/pip install -r requirements.txt",
