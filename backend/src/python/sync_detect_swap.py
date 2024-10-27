@@ -7,6 +7,16 @@ from moviepy.audio.AudioClip import AudioArrayClip
 import os
 from speaker_detection_zoom import detect_faces_fast
 
+
+# Convert audio to numpy arrays correctly
+def audio_to_array(audio_clip):
+    if audio_clip is None:
+        return np.array([])
+    chunks = list(audio_clip.iter_chunks(chunksize=1024))
+    if not chunks:
+        return np.array([])
+    return np.concatenate(chunks)
+
 def sync_audio_with_video(video_path, audio_path):
     """
     Synchronize audio with video using audio waveform analysis
@@ -18,14 +28,6 @@ def sync_audio_with_video(video_path, audio_path):
         # Extract audio from video and convert to arrays
         video_audio = video.audio
         
-        # Convert audio to numpy arrays correctly
-        def audio_to_array(audio_clip):
-            if audio_clip is None:
-                return np.array([])
-            chunks = list(audio_clip.iter_chunks(chunksize=1024))
-            if not chunks:
-                return np.array([])
-            return np.concatenate(chunks)
 
         video_audio_array = audio_to_array(video_audio)
         audio_array = audio_to_array(audio)
@@ -322,24 +324,61 @@ def resize_clip(clip, target_width, target_height):
 
     return resized_clip.resize((target_width, target_height)).set_audio(clip.audio)
 
+def analyze_audio_characteristics(audio_array):
+    """
+    Analyze audio to determine optimal compression parameters
+    """
+    # Convert to mono if stereo
+    if len(audio_array.shape) > 1:
+        audio_array = np.mean(audio_array, axis=1)
+    
+    # Calculate RMS energy
+    rms = np.sqrt(np.mean(audio_array**2))
+    
+    # Calculate peak level
+    peak = np.max(np.abs(audio_array))
+    
+    # Calculate dynamic range
+    dynamic_range = 20 * np.log10(peak / (rms + 1e-8))
+    
+    # Calculate crest factor (peak-to-RMS ratio)
+    crest_factor = peak / (rms + 1e-8)
+    
+    # Determine optimal compression parameters based on analysis
+    if dynamic_range > 40:
+        # High dynamic range - stronger compression needed
+        compression_threshold = 0.4
+        compression_ratio = 0.6
+    elif dynamic_range > 30:
+        # Moderate dynamic range
+        compression_threshold = 0.5
+        compression_ratio = 0.7
+    elif dynamic_range > 20:
+        # Lower dynamic range
+        compression_threshold = 0.6
+        compression_ratio = 0.8
+    else:
+        # Very low dynamic range - minimal compression needed
+        compression_threshold = 0.7
+        compression_ratio = 0.9
+    
+    return {
+        'compression_threshold': compression_threshold,
+        'compression_ratio': compression_ratio,
+        'dynamic_range': dynamic_range,
+        'crest_factor': crest_factor
+    }
+
 def process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, 
                   speaker_bias={'left': 1.2, 'main': 1.0, 'right': 1.0},
                   min_clip_duration=20.0,
-                  audio_params=None):
+                  audio_params=None,
+                  merge_audio=True):
     """
     Process videos with configurable parameters
     audio_params: dict with keys for audio processing settings
+    merge_audio: bool, whether to merge audio or use individual audio tracks
     """
-    # Set default audio parameters if none provided
-    default_audio_params = {
-        'noise_reduction': 0.05,
-        'low_cut': 80,
-        'high_cut': 8000,
-        'compression_threshold': 0.7,
-        'compression_ratio': 0.8
-    }
-    audio_params = audio_params or default_audio_params
-
     try:
         print("Starting video processing...")
         
@@ -355,17 +394,47 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         print("Syncing all cameras together...")
         left_synced, main_synced, right_synced = sync_cameras(left_synced, main_synced, right_synced)
 
-        # Use smart audio merging with provided parameters
-        merged_audio = smart_audio_merge(
-            left_synced.audio, 
-            right_synced.audio,
-            **audio_params
-        )
-
-        # Apply merged audio to all clips
-        left_synced = left_synced.set_audio(merged_audio)
-        main_synced = main_synced.set_audio(merged_audio)
-        right_synced = right_synced.set_audio(merged_audio)
+        if merge_audio:
+            print("Analyzing audio characteristics...")
+            # Convert audio to arrays for analysis
+            left_array = audio_to_array(left_synced.audio)
+            right_array = audio_to_array(right_synced.audio)
+            
+            # Analyze both audio tracks
+            left_analysis = analyze_audio_characteristics(left_array)
+            right_analysis = analyze_audio_characteristics(right_array)
+            
+            # Use the more conservative compression settings
+            optimal_compression = {
+                'compression_threshold': max(left_analysis['compression_threshold'], 
+                                          right_analysis['compression_threshold']),
+                'compression_ratio': max(left_analysis['compression_ratio'], 
+                                       right_analysis['compression_ratio'])
+            }
+            
+            print(f"Optimal compression parameters determined: {optimal_compression}")
+            
+            # Update audio_params with analyzed compression settings
+            if audio_params is None:
+                audio_params = {}
+            audio_params.update(optimal_compression)
+            
+            # Use smart audio merging with provided parameters
+            print("Merging audio tracks...")
+            merged_audio = smart_audio_merge(
+                left_synced.audio, 
+                right_synced.audio,
+                **audio_params
+            )
+            
+            # Apply merged audio to all clips
+            left_synced = left_synced.set_audio(merged_audio)
+            main_synced = main_synced.set_audio(merged_audio)
+            right_synced = right_synced.set_audio(merged_audio)
+        else:
+            print("Using individual audio tracks...")
+            # Keep original audio for each video
+            pass
 
         # Get minimum duration considering both video and audio for each clip
         left_duration = min(left_synced.duration, left_synced.audio.duration if left_synced.audio else float('inf'))
@@ -496,12 +565,12 @@ if __name__ == "__main__":
     # Initialize default parameters
     speaker_bias = {'left': 1.2, 'main': 1.0, 'right': 1.0}
     min_clip_duration = 20.0
+    merge_audio = True
     audio_params = {
         'noise_reduction': 0.05,
         'low_cut': 80,
-        'high_cut': 8000,
-        'compression_threshold': 0.7,
-        'compression_ratio': 0.8
+        'high_cut': 8000
+        # compression parameters will be determined automatically
     }
     
     # If processing parameters are provided as JSON string
@@ -518,6 +587,10 @@ if __name__ == "__main__":
             if 'min_clip_duration' in processing_params:
                 min_clip_duration = float(processing_params['min_clip_duration'])
             
+            # Update audio merging preference if provided
+            if 'merge_audio' in processing_params:
+                merge_audio = bool(processing_params['merge_audio'])
+            
             # Update audio parameters if provided
             if 'audio_params' in processing_params:
                 audio_params.update(processing_params['audio_params'])
@@ -525,6 +598,7 @@ if __name__ == "__main__":
             print("Using custom processing parameters:")
             print(f"Speaker bias: {speaker_bias}")
             print(f"Min clip duration: {min_clip_duration}")
+            print(f"Merge audio: {merge_audio}")
             print(f"Audio parameters: {audio_params}")
         except Exception as e:
             print(f"Error parsing processing parameters: {str(e)}")
@@ -553,7 +627,8 @@ if __name__ == "__main__":
         output_path,
         speaker_bias=speaker_bias,
         min_clip_duration=min_clip_duration,
-        audio_params=audio_params
+        audio_params=audio_params,
+        merge_audio=merge_audio
     )
     
     print(f"Processing completed. Output saved to {output_path}")
