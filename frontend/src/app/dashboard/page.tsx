@@ -2,6 +2,7 @@ import { Dashboard } from './dashboard';
 import { currentUser } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
+import { UserButton } from '@clerk/nextjs';
 
 export default async function DashboardPage() {
   const user = await currentUser();
@@ -20,15 +21,25 @@ export default async function DashboardPage() {
       </main>
 
       {/* User profile */}
-      <aside className='w-64 bg-white p-6 shadow-md'>
+      <aside className='w-80 bg-white p-6 shadow-md'>
         <div className='flex items-center space-x-4 mb-6'>
-          <Image
+          <UserButton
+            appearance={{
+              elements: {
+                avatarBox: {
+                  width: '40px',
+                  height: '40px',
+                },
+              },
+            }}
+          />
+          {/* <Image
             src={user.imageUrl}
             width={48}
             height={48}
             alt='Profile picture'
             className='w-12 h-12 rounded-full object-cover'
-          />
+          /> */}
           <div>
             <h3 className='font-bold'>
               {user.firstName} {user.lastName}

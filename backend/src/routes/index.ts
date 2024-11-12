@@ -5,8 +5,7 @@ import {
   detectSpeakerAndZoom,
   trimVideoBasedOnContent,
   analyzeVideoContent,
-  trimVideo,
-  appendVideoSection,
+  syncDetectAndSwap,
 } from '../services/videoProcessingService';
 import { config } from 'dotenv';
 
@@ -69,6 +68,40 @@ app.post('/detect-and-zoom', async (req: any, res: any) => {
 
   try {
     const processedVideoUrl = await detectSpeakerAndZoom(videoUrl, projectId);
+    return res.json({ processedVideoUrl });
+  } catch (error) {
+    console.error('Error processing video:', error);
+    return res.status(500).json({ error: 'Failed to process video' });
+  }
+});
+
+app.post('/sync-detect-and-swap-cams', async (req: any, res: any) => {
+  const {
+    projectId,
+    userId,
+    leftCamera,
+    mainCamera,
+    rightCamera,
+    leftAudio,
+    rightAudio,
+    processingParams
+  } = req.body;
+
+  if (!projectId || !userId || !leftCamera || !mainCamera || !rightCamera || !leftAudio || !rightAudio) {
+    return res.status(400).json({ error: 'Missing required data' });
+  }
+
+  try {
+    const processedVideoUrl = await syncDetectAndSwap({
+      projectId,
+      userId,
+      leftCamera,
+      mainCamera,
+      rightCamera,
+      leftAudio,
+      rightAudio,
+      processingParams
+    });
     return res.json({ processedVideoUrl });
   } catch (error) {
     console.error('Error processing video:', error);
@@ -156,8 +189,8 @@ app.post('/create-podcast', async (req: any, res: any) => {
   }
 
   try {
-    // Step 1: Process and combine the video files
-    const combinedVideoUrl = await processAndUploadFiles({
+    // Step 1: Perform sync detection, camera swapping, and combine videos
+    const combinedVideoUrl = await syncDetectAndSwap({
       projectId,
       userId,
       leftCamera,
@@ -168,10 +201,7 @@ app.post('/create-podcast', async (req: any, res: any) => {
     });
 
     // Step 2: Perform speaker detection and zooming
-    const zoomedVideoUrl = await detectSpeakerAndZoom(
-      combinedVideoUrl,
-      projectId
-    );
+    const zoomedVideoUrl = await detectSpeakerAndZoom(combinedVideoUrl, projectId);
 
     // Step 3: Match the audio with the zoomed video
     const finalVideoUrl = await matchAudioVideo(leftAudio, zoomedVideoUrl);
@@ -180,67 +210,6 @@ app.post('/create-podcast', async (req: any, res: any) => {
   } catch (error) {
     console.error('Error creating podcast:', error);
     return res.status(500).json({ error: 'Failed to create podcast' });
-  }
-});
-
-app.post('/trim-video', async (req: any, res: any) => {
-  const { videoUrl, startTime, endTime, projectId } = req.body;
-
-  if (
-    !videoUrl ||
-    startTime === undefined ||
-    endTime === undefined ||
-    !projectId
-  ) {
-    return res.status(400).json({ error: 'Missing required parameters' });
-  }
-
-  if (startTime >= endTime) {
-    return res
-      .status(400)
-      .json({ error: 'Start time must be less than end time' });
-  }
-
-  try {
-    const trimmedVideoUrl = await trimVideo({
-      videoUrl,
-      startTime,
-      endTime,
-      projectId,
-    });
-    return res.json({ trimmedVideoUrl });
-  } catch (error) {
-    console.error('Error trimming video:', error);
-    return res.status(500).json({ error: 'Failed to trim video' });
-  }
-});
-
-app.post('/append-video-section', async (req: any, res: any) => {
-  const { sourceVideoUrl, targetVideoUrl, startTime, duration, projectId } =
-    req.body;
-
-  if (
-    !sourceVideoUrl ||
-    !targetVideoUrl ||
-    startTime === undefined ||
-    !duration ||
-    !projectId
-  ) {
-    return res.status(400).json({ error: 'Missing required parameters' });
-  }
-
-  try {
-    const finalVideoUrl = await appendVideoSection({
-      sourceVideoUrl,
-      targetVideoUrl,
-      startTime,
-      duration,
-      projectId,
-    });
-    return res.json({ finalVideoUrl });
-  } catch (error) {
-    console.error('Error appending video section:', error);
-    return res.status(500).json({ error: 'Failed to append video section' });
   }
 });
 

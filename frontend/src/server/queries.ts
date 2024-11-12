@@ -6,7 +6,6 @@ import { projectFiles, projects } from './db/schema';
 import { and, eq } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
-import { createId } from '@paralleldrive/cuid2';
 
 // Function to create a new project
 export const createProject = async (title: string) => {
@@ -190,4 +189,55 @@ export async function updateProjectTitle({
     console.error('Failed to update project title:', error);
     throw new Error('Failed to update project title');
   }
+}
+
+interface ExportSettings {
+  format: string;
+  frameRate: string;
+  resolution: string;
+  quality: string;
+}
+
+export async function exportProject(formData: FormData) {
+  //   const projectId = formData.get('projectId');
+  //   const settings = JSON.parse(formData.get('settings') as string) as ExportSettings;
+  //   if (!projectId) throw new Error('Project ID is required');
+  //   try {
+  //     // 1. Get project data
+  //     const project = await getProjectById(projectId);
+  //     // 2. Initialize FFmpeg
+  //     const ffmpeg = createFFmpeg({ log: true });
+  //     await ffmpeg.load();
+  //     // 3. Prepare video settings
+  //     const outputOptions = [
+  //       '-c:v libx264',                    // Video codec
+  //       `-r ${settings.frameRate}`,        // Frame rate
+  //       `-s ${settings.resolution}`,       // Resolution
+  //       settings.quality === 'High'
+  //         ? '-crf 18'                      // High quality
+  //         : settings.quality === 'Medium'
+  //           ? '-crf 23'                    // Medium quality
+  //           : '-crf 28',                   // Low quality
+  //       '-preset fast',                    // Encoding speed preset
+  //       '-movflags +faststart'             // Enable fast start for web playback
+  //     ];
+  //     // 4. Process the video
+  //     // Note: This is a simplified example. You'll need to implement
+  //     // the actual video processing logic based on your project structure
+  //     await ffmpeg.run(
+  //       '-i', 'input.mp4',
+  //       ...outputOptions,
+  //       `output.${settings.format.toLowerCase()}`
+  //     );
+  //     // 5. Get the processed video data
+  //     const data = ffmpeg.FS('readFile', `output.${settings.format.toLowerCase()}`);
+  //     // 6. Create a download URL
+  //     const blob = new Blob([data.buffer], { type: `video/${settings.format.toLowerCase()}` });
+  //     const url = URL.createObjectURL(blob);
+  //     // 7. Trigger download
+  //     return { url, filename: `project-${projectId}.${settings.format.toLowerCase()}` };
+  //   } catch (error) {
+  //     console.error('Export failed:', error);
+  //     throw new Error('Failed to export project');
+  //   }
 }

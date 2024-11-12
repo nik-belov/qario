@@ -5,6 +5,8 @@ import { ArrowLeft, Wand2 } from 'lucide-react';
 import ProjectManager from '../project-manager';
 import { getProjectById } from '@/server/queries';
 import ProjectTitleEditor from '../title-edit';
+import { exportProject } from '@/server/queries';
+import ExportDialog from '../export-dialog';
 
 export default async function PreviewPage({
   params,
@@ -30,7 +32,7 @@ export default async function PreviewPage({
             projectId={projectId.toString()}
             initialTitle={project.title}
           />
-          <Button>Export</Button>
+          <ExportDialog />
         </div>
       </header>
 

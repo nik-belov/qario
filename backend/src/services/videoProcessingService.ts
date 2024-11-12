@@ -2,15 +2,11 @@ import { downloadFileFromS3, uploadFileToS3 } from './s3Service';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import { promisify } from 'util';
+import { log, promisify } from 'util';
 import axios from 'axios';
 import FormData from 'form-data';
 import { runPythonScript } from './pythonBridge';
 import os from 'os';
-import { spawn } from 'child_process';
-import { eq } from 'drizzle-orm';
-import { projects } from '../db/schema';
-import { db } from '../db';
 
 const execPromise = promisify(exec);
 
@@ -95,16 +91,6 @@ export async function processAndUploadFiles({
   return finalVideoUrl;
 }
 
-interface PythonProgress {
-  progress: number | 'error';
-}
-
-interface PythonResult {
-  processedVideoUrl: string;
-}
-
-type PythonOutput = PythonProgress | PythonResult;
-
 export async function detectSpeakerAndZoom(
   videoUrl: string,
   projectId: string
@@ -119,88 +105,135 @@ export async function detectSpeakerAndZoom(
     await downloadFileFromS3(videoUrl, inputVideo);
     console.log(`Input video downloaded to: ${inputVideo}`);
 
-    const result = await new Promise<PythonResult>((resolve, reject) => {
-      const pythonProcess = spawn('python3', [
-        path.join(__dirname, '..', 'python', 'speaker_detection.py'),
-        inputVideo,
-        outputVideo,
-        projectId,
-      ]);
-
-      let lastJsonOutput: PythonResult | null = null;
-
-      pythonProcess.stdout.on('data', async (data) => {
-        const output = data.toString();
-        console.log('Python output:', output);
-
-        // Try to parse each line as JSON
-        const lines = output.split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
-
-          try {
-            const jsonData = JSON.parse(line) as PythonOutput;
-
-            // Handle progress updates
-            if ('progress' in jsonData) {
-              await db
-                .update(projects)
-                .set({ processingProgress: String(jsonData.progress) })
-                .where(eq(projects.id, projectId))
-                .execute();
-            }
-
-            // Handle final result
-            if ('processedVideoUrl' in jsonData) {
-              lastJsonOutput = jsonData;
-            }
-          } catch (e) {
-            // Not JSON data, just regular console output
-            continue;
-          }
-        }
-      });
-
-      pythonProcess.stderr.on('data', (data) => {
-        console.error('Python error:', data.toString());
-      });
-
-      pythonProcess.on('close', (code) => {
-        if (code === 0 && lastJsonOutput) {
-          resolve(lastJsonOutput);
-        } else {
-          reject(
-            new Error(
-              code === 0
-                ? 'No valid output received from Python script'
-                : `Python script exited with code ${code}`
-            )
-          );
-        }
-      });
-    });
+    const result = await runPythonScript('speaker_detection_zoom.py', [
+      inputVideo,
+      outputVideo,
+      projectId,
+    ]);
 
     const outputBuffer = await fs.promises.readFile(outputVideo);
     const processedFileName = path.basename(outputVideo);
-    const s3Key = `${projectId}/${processedFileName}`;
     const processedVideoUrl = await uploadFileToS3(
       outputBuffer,
-      s3Key,
+      `${projectId}/${processedFileName}`,
       'video/mp4'
     );
+    console.log(`Processed video uploaded successfully: ${processedVideoUrl}`);
 
     await fs.promises.unlink(inputVideo);
     await fs.promises.unlink(outputVideo);
 
     return processedVideoUrl;
   } catch (error) {
-    await db
-      .update(projects)
-      .set({ processingProgress: 'err' })
-      .where(eq(projects.id, projectId))
-      .execute();
-
     console.error('Error in detectSpeakerAndZoom:', error);
+    throw error;
+  }
+}
+
+interface AudioParams {
+  noise_reduction?: number;
+  low_cut?: number;
+  high_cut?: number;
+  compression_threshold?: number;
+  compression_ratio?: number;
+}
+
+interface SpeakerBias {
+  left?: number;
+  main?: number;
+  right?: number;
+}
+
+interface ProcessingParams {
+  speaker_bias?: SpeakerBias;
+  min_clip_duration?: number;
+  audio_params?: AudioParams;
+}
+
+export async function syncDetectAndSwap({
+  projectId,
+  userId,
+  leftCamera,
+  mainCamera,
+  rightCamera,
+  leftAudio,
+  rightAudio,
+  processingParams
+}: {
+  projectId: string;
+  userId: string;
+  leftCamera: string;
+  mainCamera: string;
+  rightCamera: string;
+  leftAudio: string;
+  rightAudio: string;
+  processingParams?: ProcessingParams;
+}): Promise<string> {
+  const tempDir = path.join(os.tmpdir(), 'sync_detect_swap');
+  await fs.promises.mkdir(tempDir, { recursive: true });
+
+  const localLeftCamera = path.join(tempDir, 'left_camera.mp4');
+  const localMainCamera = path.join(tempDir, 'main_camera.mp4');
+  const localRightCamera = path.join(tempDir, 'right_camera.mp4');
+  const localLeftAudio = path.join(tempDir, 'left_audio.wav');
+  const localRightAudio = path.join(tempDir, 'right_audio.wav');
+  const outputVideo = path.join(tempDir, `${projectId}_processed.mp4`);
+
+  try {
+    // Download all input files
+    await Promise.all([
+      downloadFileFromS3(leftCamera, localLeftCamera),
+      downloadFileFromS3(mainCamera, localMainCamera),
+      downloadFileFromS3(rightCamera, localRightCamera),
+      downloadFileFromS3(leftAudio, localLeftAudio),
+      downloadFileFromS3(rightAudio, localRightAudio),
+    ]);
+
+    console.log('All input files downloaded successfully');
+
+    // Run the Python script for sync detection and camera swapping
+    const args = [
+      localLeftCamera,
+      localMainCamera,
+      localRightCamera,
+      localLeftAudio,
+      localRightAudio,
+      outputVideo,
+      projectId,
+    ];
+
+    // Add processing parameters if provided
+    if (processingParams) {
+      args.push(JSON.stringify(processingParams));
+    }
+
+    const result = await runPythonScript('sync_detect_swap.py', args);
+
+    console.log('Python script executed successfully:', result);
+
+    // Upload the processed video
+    const outputBuffer = await fs.promises.readFile(outputVideo);
+    const processedFileName = `${projectId}_synced_and_swapped.mp4`;
+    const processedVideoUrl = await uploadFileToS3(
+      outputBuffer,
+      `${projectId}/${processedFileName}`,
+      'video/mp4'
+    );
+    console.log(`Processed video uploaded successfully: ${processedVideoUrl}`);
+
+    // Clean up temporary files
+    await Promise.all([
+      fs.promises.unlink(localLeftCamera),
+      fs.promises.unlink(localMainCamera),
+      fs.promises.unlink(localRightCamera),
+      fs.promises.unlink(localLeftAudio),
+      fs.promises.unlink(localRightAudio),
+      fs.promises.unlink(outputVideo),
+    ]);
+
+    return processedVideoUrl;
+  } catch (error) {
+    console.error('Error in syncDetectAndSwap:', error);
     throw error;
   }
 }
@@ -452,131 +485,4 @@ async function determineSegmentsToKeep(
     response.data.choices[0].message.content
   );
   return segments;
-}
-
-export async function trimVideo({
-  videoUrl,
-  startTime,
-  endTime,
-  projectId,
-}: {
-  videoUrl: string;
-  startTime: number;
-  endTime: number;
-  projectId: string;
-}): Promise<string> {
-  const tempDir = '/tmp/video_trim';
-  await fs.promises.mkdir(tempDir, { recursive: true });
-
-  const inputVideo = path.join(tempDir, 'input.mp4');
-  const outputVideo = path.join(tempDir, 'output.mp4');
-
-  try {
-    // Download video from S3
-    await downloadFileFromS3(videoUrl, inputVideo);
-
-    // Calculate duration
-    const duration = endTime - startTime;
-
-    // Trim video using FFmpeg
-    const trimCommand = `
-        ffmpeg -y -i ${inputVideo} -ss ${startTime} -t ${duration} \
-        -c:v libx264 -c:a aac -avoid_negative_ts make_zero ${outputVideo}
-      `;
-    await execPromise(trimCommand);
-
-    // Upload the result to S3
-    const outputBuffer = await fs.promises.readFile(outputVideo);
-    const outputFileName = `${projectId}/trimmed_${Date.now()}.mp4`;
-    const finalVideoUrl = await uploadFileToS3(
-      outputBuffer,
-      outputFileName,
-      'video/mp4'
-    );
-
-    // Clean up temporary files
-    await Promise.all([
-      fs.promises.unlink(inputVideo),
-      fs.promises.unlink(outputVideo),
-    ]);
-
-    return finalVideoUrl;
-  } catch (error) {
-    console.error('Error in trimVideo:', error);
-    throw error;
-  }
-}
-
-export async function appendVideoSection({
-  sourceVideoUrl,
-  targetVideoUrl,
-  startTime,
-  duration,
-  projectId,
-}: {
-  sourceVideoUrl: string;
-  targetVideoUrl: string;
-  startTime: number;
-  duration: number;
-  projectId: string;
-}): Promise<string> {
-  const tempDir = '/tmp/video_append';
-  await fs.promises.mkdir(tempDir, { recursive: true });
-
-  const sourceVideo = path.join(tempDir, 'source.mp4');
-  const targetVideo = path.join(tempDir, 'target.mp4');
-  const clipVideo = path.join(tempDir, 'clip.mp4');
-  const outputVideo = path.join(tempDir, 'output.mp4');
-
-  try {
-    // Download both videos from S3
-    await Promise.all([
-      downloadFileFromS3(sourceVideoUrl, sourceVideo),
-      downloadFileFromS3(targetVideoUrl, targetVideo),
-    ]);
-
-    // Extract the clip from source video
-    const extractCommand = `
-        ffmpeg -y -i ${sourceVideo} -ss ${startTime} -t ${duration} \
-        -c:v libx264 -c:a aac ${clipVideo}
-      `;
-    await execPromise(extractCommand);
-
-    // Create a concat file
-    const concatFile = path.join(tempDir, 'concat.txt');
-    await fs.promises.writeFile(
-      concatFile,
-      `file '${targetVideo}'\nfile '${clipVideo}'`
-    );
-
-    // Concatenate videos
-    const concatCommand = `
-        ffmpeg -y -f concat -safe 0 -i ${concatFile} \
-        -c:v libx264 -c:a aac ${outputVideo}
-      `;
-    await execPromise(concatCommand);
-
-    // Upload the result to S3
-    const outputBuffer = await fs.promises.readFile(outputVideo);
-    const outputFileName = `${projectId}/appended_output.mp4`;
-    const finalVideoUrl = await uploadFileToS3(
-      outputBuffer,
-      outputFileName,
-      'video/mp4'
-    );
-
-    // Clean up temporary files
-    await Promise.all([
-      fs.promises.unlink(sourceVideo),
-      fs.promises.unlink(targetVideo),
-      fs.promises.unlink(clipVideo),
-      fs.promises.unlink(outputVideo),
-      fs.promises.unlink(concatFile),
-    ]);
-
-    return finalVideoUrl;
-  } catch (error) {
-    console.error('Error in appendVideoSection:', error);
-    throw error;
-  }
 }

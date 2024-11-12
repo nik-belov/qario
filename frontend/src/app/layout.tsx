@@ -21,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <ClerkProvider>
+    <ClerkProvider afterSignOutUrl='/'>
       <html lang='en' className='bg-slate-50'>
         <body className={cn(bitter.className)}>
           <main>{children}</main>
