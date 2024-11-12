@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import MaxWidthWrapper from './max-width-wrapper';
 import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/nextjs';
-// import Image from 'next/image';
+import Image from 'next/image';
 // import { Button } from '@/components/ui/button';
 
 export default function Navbar() {
@@ -13,7 +13,7 @@ export default function Navbar() {
             href='/'
             className='flex z-40 items-center gap-1.5 text-3xl text-black'
           >
-            {/* <Image src='/Logo.svg' alt='Logo' width={40} height={40} /> */}
+            <Image src='/favicon.ico' alt='Logo' width={40} height={40} />
             Qario
           </Link>
 

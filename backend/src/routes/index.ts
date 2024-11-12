@@ -84,10 +84,18 @@ app.post('/sync-detect-and-swap-cams', async (req: any, res: any) => {
     rightCamera,
     leftAudio,
     rightAudio,
-    processingParams
+    processingParams,
   } = req.body;
 
-  if (!projectId || !userId || !leftCamera || !mainCamera || !rightCamera || !leftAudio || !rightAudio) {
+  if (
+    !projectId ||
+    !userId ||
+    !leftCamera ||
+    !mainCamera ||
+    !rightCamera ||
+    !leftAudio ||
+    !rightAudio
+  ) {
     return res.status(400).json({ error: 'Missing required data' });
   }
 
@@ -100,7 +108,7 @@ app.post('/sync-detect-and-swap-cams', async (req: any, res: any) => {
       rightCamera,
       leftAudio,
       rightAudio,
-      processingParams
+      processingParams,
     });
     return res.json({ processedVideoUrl });
   } catch (error) {
@@ -201,7 +209,10 @@ app.post('/create-podcast', async (req: any, res: any) => {
     });
 
     // Step 2: Perform speaker detection and zooming
-    const zoomedVideoUrl = await detectSpeakerAndZoom(combinedVideoUrl, projectId);
+    const zoomedVideoUrl = await detectSpeakerAndZoom(
+      combinedVideoUrl,
+      projectId
+    );
 
     // Step 3: Match the audio with the zoomed video
     const finalVideoUrl = await matchAudioVideo(leftAudio, zoomedVideoUrl);

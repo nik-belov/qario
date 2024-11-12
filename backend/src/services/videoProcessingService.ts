@@ -158,7 +158,8 @@ export async function syncDetectAndSwap({
   rightCamera,
   leftAudio,
   rightAudio,
-  processingParams
+  processingParams,
+  isLocalTesting = false, // Add this parameter
 }: {
   projectId: string;
   userId: string;
@@ -168,6 +169,7 @@ export async function syncDetectAndSwap({
   leftAudio: string;
   rightAudio: string;
   processingParams?: ProcessingParams;
+  isLocalTesting?: boolean;
 }): Promise<string> {
   const tempDir = path.join(os.tmpdir(), 'sync_detect_swap');
   await fs.promises.mkdir(tempDir, { recursive: true });
@@ -180,18 +182,29 @@ export async function syncDetectAndSwap({
   const outputVideo = path.join(tempDir, `${projectId}_processed.mp4`);
 
   try {
-    // Download all input files
-    await Promise.all([
-      downloadFileFromS3(leftCamera, localLeftCamera),
-      downloadFileFromS3(mainCamera, localMainCamera),
-      downloadFileFromS3(rightCamera, localRightCamera),
-      downloadFileFromS3(leftAudio, localLeftAudio),
-      downloadFileFromS3(rightAudio, localRightAudio),
-    ]);
+    if (isLocalTesting) {
+      // For local testing, copy files instead of downloading
+      await Promise.all([
+        fs.promises.copyFile(leftCamera, localLeftCamera),
+        fs.promises.copyFile(mainCamera, localMainCamera),
+        fs.promises.copyFile(rightCamera, localRightCamera),
+        fs.promises.copyFile(leftAudio, localLeftAudio),
+        fs.promises.copyFile(rightAudio, localRightAudio),
+      ]);
+    } else {
+      // Original S3 download logic
+      await Promise.all([
+        downloadFileFromS3(leftCamera, localLeftCamera),
+        downloadFileFromS3(mainCamera, localMainCamera),
+        downloadFileFromS3(rightCamera, localRightCamera),
+        downloadFileFromS3(leftAudio, localLeftAudio),
+        downloadFileFromS3(rightAudio, localRightAudio),
+      ]);
+    }
 
-    console.log('All input files downloaded successfully');
+    console.log('All input files prepared successfully');
 
-    // Run the Python script for sync detection and camera swapping
+    // Run the Python script
     const args = [
       localLeftCamera,
       localMainCamera,
@@ -202,16 +215,20 @@ export async function syncDetectAndSwap({
       projectId,
     ];
 
-    // Add processing parameters if provided
-    if (processingParams) {
-      args.push(JSON.stringify(processingParams));
+    const defaultParams = {
+      ...processingParams,
+      merge_audio: false,
+    };
+    args.push(JSON.stringify(defaultParams));
+
+    await runPythonScript('sync_detect_swap.py', args);
+
+    // For testing, you might want to just return the local path
+    if (isLocalTesting) {
+      return outputVideo;
     }
 
-    const result = await runPythonScript('sync_detect_swap.py', args);
-
-    console.log('Python script executed successfully:', result);
-
-    // Upload the processed video
+    // Original S3 upload logic
     const outputBuffer = await fs.promises.readFile(outputVideo);
     const processedFileName = `${projectId}_synced_and_swapped.mp4`;
     const processedVideoUrl = await uploadFileToS3(
@@ -219,7 +236,6 @@ export async function syncDetectAndSwap({
       `${projectId}/${processedFileName}`,
       'video/mp4'
     );
-    console.log(`Processed video uploaded successfully: ${processedVideoUrl}`);
 
     // Clean up temporary files
     await Promise.all([

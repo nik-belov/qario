@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { Bitter } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ClerkProvider } from '@clerk/nextjs';
-import { cn } from '@/lib/utils';
+import { cn, constructMetadata } from '@/lib/utils';
 import './globals.css';
 
 const bitter = Bitter({
@@ -10,10 +10,7 @@ const bitter = Bitter({
   subsets: ['latin'],
 });
 
-export const metadata: Metadata = {
-  title: 'Qario',
-  description: '',
-};
+export const metadata = constructMetadata();
 
 export default function RootLayout({
   children,

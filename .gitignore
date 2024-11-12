@@ -43,3 +43,8 @@ yarn-error.log*
 venv/
 __pycache__/
 *.pyc
+
+# Test assets
+*test-assets/
+!test-assets/videos/.gitkeep
+!test-assets/audio/.gitkeep

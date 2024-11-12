@@ -39,6 +39,15 @@ def download_models():
     hf_hub_download(repo_id="opencv/opencv_zoo", filename="face_detection_yunet_2023mar.onnx", cache_dir=models_dir)
     hf_hub_download(repo_id="microsoft/resnet-50", filename="pytorch_model.bin", cache_dir=models_dir)
 
+    # Download dlib's facial landmark predictor
+    print("Downloading dlib's facial landmark predictor...")
+    dlib_model_url = "https://github.com/italojs/facial-landmarks-recognition/raw/master/shape_predictor_68_face_landmarks.dat"
+    response = requests.get(dlib_model_url)
+    dlib_model_path = os.path.join(models_dir, 'shape_predictor_68_face_landmarks.dat')
+    with open(dlib_model_path, 'wb') as f:
+        f.write(response.content)
+    print(f"Downloaded facial landmark predictor to {dlib_model_path}")
+
     print("Model download complete!")
 
 if __name__ == "__main__":

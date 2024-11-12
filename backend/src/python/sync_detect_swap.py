@@ -602,7 +602,7 @@ if __name__ == "__main__":
     
     # Initialize default parameters
     speaker_bias = {'left': 1.2, 'main': 1.0, 'right': 1.0}
-    min_clip_duration = 20.0
+    min_clip_duration = 1.0
     merge_audio = True
     audio_params = {
         'noise_reduction': 0.05,

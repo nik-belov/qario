@@ -8,7 +8,8 @@
     "create-venv": "python3 -m venv venv || python -m venv venv",
     "install-py-deps": "./venv/bin/pip install -r requirements.txt",
     "postinstall": "bun run create-venv && bun run install-py-deps",
-    "activate": "source venv/bin/activate"
+    "activate": "source venv/bin/activate",
+    "test:local": "bun run src/test/localTest.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

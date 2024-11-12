@@ -7,10 +7,18 @@ export async function runPythonScript(
 ): Promise<any> {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, '..', 'python', scriptName);
+    const pythonPath = path.join(
+      __dirname,
+      '..',
+      '..',
+      'venv',
+      'bin',
+      'python'
+    );
     console.log(`Running Python script: ${scriptPath}`);
     console.log(`Arguments: ${args.join(' ')}`);
 
-    const pythonProcess = spawn('python3', [scriptPath, ...args]);
+    const pythonProcess = spawn(pythonPath, [scriptPath, ...args]);
 
     let stdout = '';
     let stderr = '';
