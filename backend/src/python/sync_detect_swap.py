@@ -7,6 +7,8 @@ from moviepy.audio.AudioClip import AudioArrayClip
 import os
 from speaker_detection_zoom import detect_faces_fast
 
+import sync_video_audio
+
 
 # Convert audio to numpy arrays correctly
 def audio_to_array(audio_clip):
@@ -22,27 +24,7 @@ def sync_audio_with_video(video_path, audio_path):
     Synchronize audio with video using audio waveform analysis
     """
     try:
-        video = VideoFileClip(video_path)
-        audio = AudioFileClip(audio_path)
-        
-        # Extract audio from video and convert to arrays
-        video_audio = video.audio
-        
-
-        video_audio_array = audio_to_array(video_audio)
-        audio_array = audio_to_array(audio)
-        
-        # Find sync point using cross-correlation
-        delay = find_sync_offset(video_audio_array, audio_array)
-        
-        # Apply the delay to the audio
-        synced_audio = audio.subclip(max(0, -delay))
-        if delay > 0:
-            synced_audio = AudioFileClip(audio_path).set_start(delay)
-        
-        synced_video = video.set_audio(synced_audio)
-        
-        return synced_video
+        return sync_video_audio.sync(video_path, audio_path)
         
     except Exception as e:
         print(f"Error in sync_audio_with_video: {str(e)}")
