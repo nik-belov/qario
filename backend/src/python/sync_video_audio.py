@@ -123,6 +123,8 @@ def main(video_path: str, audio_path: str, output_path: str):
     # shift audio on this value (if positive - cut video)
     print("Calculating offset...")
     offset_sec = calculate_offset(video_path, audio_path)
+    if offset_sec < -30:
+        offset_sec += 1.2
     print(f"Video-to-audio offset: {offset_sec} seconds")
 
     if offset_sec > 0:
