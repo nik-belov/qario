@@ -1,13 +1,16 @@
-import os
+import sys
 import time
 import argparse
 import cv2
 import mediapipe as mp
 import numpy as np
 import librosa
-from pydub import AudioSegment
 from scipy.signal import correlate
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip
+
+
+def eprint(*args, **kwargs):
+    print(*args, **kwargs, file=sys.stderr)
 
 
 def calculate_lip_movement(frame, landmarks):
@@ -76,10 +79,10 @@ def get_possible_offsets(corr, substract, fps, n=5):
     
 
 def calculate_offset(video_path, audio_path) -> float:
-    print("Extracting video features...")
+    eprint("Extracting video features...")
     video_features, fps = get_lip_area_for_each_frame(video_path)
 
-    print("Extracting audio features...")
+    eprint("Extracting audio features...")
     audio_features = get_audio_features(audio_path, fps)
 
     video_features = normalize(video_features)
@@ -89,70 +92,37 @@ def calculate_offset(video_path, audio_path) -> float:
 
     # possible values of offset
     corr_values, possible_offsets = get_possible_offsets(corr, audio_features.shape[0], fps)
-    print(f"Correlation: {corr_values}")
-    print(f"Possible offsets: {possible_offsets}")
+    eprint(f"Correlation: {corr_values}")
+    eprint(f"Possible offsets: {possible_offsets}")
 
     return possible_offsets[0]
 
 
-def cut_video(video_path: str, n_secs: float):
-    print("Cutting video not implemented yet :)")
-    exit(1)
-
-
-def cut_audio(audio_path: str, n_secs: float):
-    cut_path = "cut_audio.wav"
-
-    n_ms = n_secs * 1000
-    audio = AudioSegment.from_file(audio_path)
-    cut = audio[n_ms:]
-    cut.export(cut_path, format="wav")
-
-    return cut_path
-
-
-def merge_video_audio(video_path: str, audio_path: str, output_path: str):
-    video_clip = VideoFileClip(video_path)
-    audio_clip = AudioFileClip(audio_path)
-    
-    merged_clip = video_clip.set_audio(audio_clip)
-    merged_clip.write_videofile(output_path, logger=None)
-
-
-def main(video_path: str, audio_path: str, output_path: str):
+def sync(video_path: str, audio_path: str):
+    eprint(f"Syncing \"{video_path}\" with \"{audio_path}\"")
     # shift audio on this value (if positive - cut video)
-    print("Calculating offset...")
+    eprint("Calculating offset...")
     offset_sec = calculate_offset(video_path, audio_path)
     if offset_sec < -30:
         offset_sec += 1.2
-    print(f"Video-to-audio offset: {offset_sec} seconds")
-
-    if offset_sec > 0:
-        video_path = cut_video(video_path, offset_sec)
-    else:
-        audio_path = cut_audio(audio_path, -offset_sec)
-
-    print("Merging video and audio...")
-    merge_video_audio(video_path, audio_path, output_path)
-
-
-def sync(video_path: str, audio_path: str):
-    # shift audio on this value (if positive - cut video)
-    print("Calculating offset...")
-    offset_sec = calculate_offset(video_path, audio_path)
-    print(f"Video-to-audio offset: {offset_sec} seconds")
-
-    if offset_sec > 0:
-        video_path = cut_video(video_path, offset_sec)
-    else:
-        audio_path = cut_audio(audio_path, -offset_sec)
+    eprint(f"Video-to-audio offset: {offset_sec} seconds")
 
     video_clip = VideoFileClip(video_path)
     audio_clip = AudioFileClip(audio_path)
-    
-    merged_clip = video_clip.set_audio(audio_clip)
-    return merged_clip
 
+    if offset_sec > 0:
+        video_clip = video_clip.subclip(offset_sec)
+    else:
+        audio_clip = audio_clip.subclip(-offset_sec)
+
+    eprint("Merging video and audio...")
+    synced_clip = video_clip.set_audio(audio_clip)
+    return synced_clip
+
+
+def main(video_path: str, audio_path: str, output_path: str):
+    output_clip = sync(video_path, audio_path)
+    output_clip.write_videofile(output_path, logger=None)
 
 
 if __name__ == "__main__":
@@ -173,4 +143,4 @@ if __name__ == "__main__":
     )
 
     finish = time.time()
-    print(f"Proccessing took: {int(finish - start)} seconds")
+    eprint(f"Proccessing took: {int(finish - start)} seconds")

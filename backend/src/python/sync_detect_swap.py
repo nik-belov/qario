@@ -29,15 +29,16 @@ def sync_audio_with_video(video_path, audio_path):
     except Exception as e:
         print(f"Error in sync_audio_with_video: {str(e)}")
         # Fallback: return video with original audio
-        return video.set_audio(audio)
+        video_clip = VideoFileClip(video_path)
+        audio_clip = AudioFileClip(audio_path)
+        return video_clip.set_audio(audio_clip)
 
-def sync_cameras(left_video, main_video, right_video):
+def sync_cameras(left_video, right_video):
     """
     Synchronize cameras while preserving original video-audio sync
     """
     # Get audio from each video
     left_audio = left_video.audio
-    main_audio = main_video.audio
     right_audio = right_video.audio
     
     # Convert to arrays
@@ -50,47 +51,40 @@ def sync_cameras(left_video, main_video, right_video):
         return np.concatenate(chunks)
 
     left_array = audio_to_array(left_audio)
-    main_array = audio_to_array(main_audio)
     right_array = audio_to_array(right_audio)
     
     # Find sync points
-    left_delay = find_sync_offset(left_array, main_array)
-    right_delay = find_sync_offset(right_array, main_array)
+    delay = find_sync_offset(left_array, right_array)
     
     # Determine the global start time
-    global_start = max(0, -left_delay, -right_delay)
+    global_start = max(0, -delay)
     
     # Adjust videos based on computed delays
-    left_start = max(0, global_start + left_delay)
-    main_start = max(0, global_start)
-    right_start = max(0, global_start + right_delay)
+    left_start = max(0, global_start)
+    right_start = max(0, global_start + delay)
     
     left_synced = left_video.subclip(left_start)
-    main_synced = main_video.subclip(main_start)
     right_synced = right_video.subclip(right_start)
     
     # Get minimum duration considering both video and audio
     min_duration = min(
-        left_synced.duration, main_synced.duration, right_synced.duration,
+        left_synced.duration, right_synced.duration,
         left_synced.audio.duration if left_synced.audio else float('inf'),
-        main_synced.audio.duration if main_synced.audio else float('inf'),
         right_synced.audio.duration if right_synced.audio else float('inf')
     )
     
     # Trim to same length
     left_synced = left_synced.subclip(0, min_duration)
-    main_synced = main_synced.subclip(0, min_duration)
     right_synced = right_synced.subclip(0, min_duration)
     
     # Debug logging
-    print(f"Left sync delay: {left_delay}")
-    print(f"Right sync delay: {right_delay}")
+    print(f"Sync delay: {delay}")
     print(f"Global start time: {global_start}")
-    print(f"Start times - Left: {left_start}, Main: {main_start}, Right: {right_start}")
-    print(f"Synced durations - Left: {left_synced.duration}, Main: {main_synced.duration}, Right: {right_synced.duration}")
-    print(f"Synced audio durations - Left: {left_synced.audio.duration}, Main: {main_synced.audio.duration}, Right: {right_synced.audio.duration}")
+    print(f"Start times - Left: {left_start}, Right: {right_start}")
+    print(f"Synced durations - Left: {left_synced.duration}, Right: {right_synced.duration}")
+    print(f"Synced audio durations - Left: {left_synced.audio.duration}, Right: {right_synced.audio.duration}")
     
-    return left_synced, main_synced, right_synced
+    return left_synced, right_synced
 
 def detect_mouth_movement(frame):
     face_locations = detect_faces_fast(frame)
@@ -389,9 +383,9 @@ def analyze_audio_characteristics(audio_array, sample_rate=44100):
         'c50': c50
     }
 
-def process_videos(left_camera, main_camera, right_camera, left_audio, right_audio, output_path, 
-                  speaker_bias={'left': 1.2, 'main': 1.0, 'right': 1.0},
-                  min_clip_duration=20.0,
+def process_videos(left_camera, right_camera, left_audio, right_audio, output_path, 
+                  speaker_bias={'left': 1.0, 'main': 1.0, 'right': 1.0},
+                  min_clip_duration=1.0,
                   audio_params=None,
                   merge_audio=True):
     """
@@ -405,14 +399,12 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         # Sync audio with videos
         print("Syncing left camera...")
         left_synced = sync_audio_with_video(left_camera, left_audio)
-        print("Syncing main camera...")
-        main_synced = sync_audio_with_video(main_camera, left_audio)
         print("Syncing right camera...")
         right_synced = sync_audio_with_video(right_camera, right_audio)
 
         # Sync cameras
         print("Syncing all cameras together...")
-        left_synced, main_synced, right_synced = sync_cameras(left_synced, main_synced, right_synced)
+        left_synced, right_synced = sync_cameras(left_synced, right_synced)
 
         if merge_audio:
             print("Analyzing audio characteristics...")
@@ -449,7 +441,6 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
             
             # Apply merged audio to all clips
             left_synced = left_synced.set_audio(merged_audio)
-            main_synced = main_synced.set_audio(merged_audio)
             right_synced = right_synced.set_audio(merged_audio)
         else:
             print("Using individual audio tracks...")
@@ -458,20 +449,17 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
 
         # Get minimum duration considering both video and audio for each clip
         left_duration = min(left_synced.duration, left_synced.audio.duration if left_synced.audio else float('inf'))
-        main_duration = min(main_synced.duration, main_synced.audio.duration if main_synced.audio else float('inf'))
         right_duration = min(right_synced.duration, right_synced.audio.duration if right_synced.audio else float('inf'))
 
         # Use the shortest duration among all clips
-        min_duration = min(left_duration, main_duration, right_duration)
+        min_duration = min(left_duration, right_duration)
 
         # Trim videos to the shortest duration that has both audio and video
         left_synced = left_synced.subclip(0, min_duration)
-        main_synced = main_synced.subclip(0, min_duration)
         right_synced = right_synced.subclip(0, min_duration)
 
         print(f"Adjusted duration: {min_duration}")
         print(f"Left synced - Duration: {left_synced.duration}, FPS: {left_synced.fps}")
-        print(f"Main synced - Duration: {main_synced.duration}, FPS: {main_synced.fps}")
         print(f"Right synced - Duration: {right_synced.duration}, FPS: {right_synced.fps}")
 
         # Process frames and swap based on speaker detection
@@ -481,27 +469,25 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         min_clip_duration = min_clip_duration  # Minimum clip duration in seconds
 
         print(f"Processing frames for {min_duration} seconds...")
-        for t in np.arange(0, min_duration, 1/main_synced.fps):
+        for t in np.arange(0, min_duration, 1/left_synced.fps):
             # Ensure we don't go beyond the clip duration
-            if t >= min_duration - 1/main_synced.fps:
+            if t >= min_duration - 1/left_synced.fps:
                 break
 
             try:
                 left_frame = left_synced.get_frame(t)
-                main_frame = main_synced.get_frame(t)
                 right_frame = right_synced.get_frame(t)
             except Exception as e:
                 print(f"Error getting frame at time {t}: {str(e)}")
                 break
 
             left_movement = detect_mouth_movement(left_frame) * speaker_bias['left']
-            main_movement = detect_mouth_movement(main_frame) * speaker_bias['main']
             right_movement = detect_mouth_movement(right_frame) * speaker_bias['right']
 
-            new_speaker = 1  # default to main
-            if left_movement > right_movement and left_movement > main_movement:
+            new_speaker = 0  # default to left
+            if left_movement > right_movement:
                 new_speaker = 0
-            elif right_movement > left_movement and right_movement > main_movement:
+            elif right_movement > left_movement:
                 new_speaker = 2
             
             # Only create a new clip when speaker changes and the previous clip is long enough
@@ -511,19 +497,14 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
                 try:
                     if current_speaker == 0:
                         clip = left_synced.subclip(segment_start, clip_end)
-                    elif current_speaker == 2:
-                        clip = right_synced.subclip(segment_start, clip_end)
                     else:
-                        clip = main_synced.subclip(segment_start, clip_end)
+                        clip = right_synced.subclip(segment_start, clip_end)
                     
                     # Ensure audio is included in the clip
                     if clip.audio is None:
                         print(f"Warning: No audio in clip from {segment_start} to {clip_end}")
-                    
-                    # Resize clip to match main_synced's aspect ratio
-                    clip = resize_clip(clip, main_synced.w, main_synced.h)
-                    
-                    clips.append(clip.set_fps(main_synced.fps))
+                                        
+                    clips.append(clip.set_fps(left_synced.fps))
                 except Exception as e:
                     print(f"Error creating subclip from {segment_start} to {clip_end}: {str(e)}")
                     break
@@ -535,27 +516,25 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
         try:
             if current_speaker == 0:
                 clip = left_synced.subclip(segment_start, min_duration)
-            elif current_speaker == 2:
-                clip = right_synced.subclip(segment_start, min_duration)
             else:
-                clip = main_synced.subclip(segment_start, min_duration)
+                clip = right_synced.subclip(segment_start, min_duration)
             
             # Ensure audio is included in the final clip
             if clip.audio is None:
                 print(f"Warning: No audio in final clip from {segment_start} to {min_duration}")
             
-            # Resize final clip to match main_synced's aspect ratio
-            clip = resize_clip(clip, main_synced.w, main_synced.h)
+            # Resize final clip to match left's aspect ratio
+            clip = resize_clip(clip, left_synced.w, left_synced.h)
             
-            clips.append(clip.set_fps(main_synced.fps))
+            clips.append(clip.set_fps(left_synced.fps))
         except Exception as e:
             print(f"Error adding final clip: {str(e)}")
 
         print(f"Number of clips generated: {len(clips)}")
 
         if not clips:
-            print("No clips were generated. Using main video as fallback.")
-            final_video = main_synced
+            print("No clips were generated. Using left video as fallback.")
+            final_video = left_synced
         else:
             print("Concatenating clips...")
             print(clips)
@@ -563,11 +542,11 @@ def process_videos(left_camera, main_camera, right_camera, left_audio, right_aud
 
         # Ensure the final video has audio
         if final_video.audio is None:
-            print("Warning: Final video has no audio. Attempting to add audio from main video.")
-            final_video = final_video.set_audio(main_synced.audio)
+            print("Warning: Final video has no audio. Attempting to add audio from left video.")
+            final_video = final_video.set_audio(left_synced.audio)
 
         print(f"Writing final video to {output_path}...")
-        final_video.write_videofile(output_path, fps=main_synced.fps, audio_codec='aac', audio=True)
+        final_video.write_videofile(output_path, fps=left_synced.fps, audio_codec='aac', audio=True)
         print("Video processing completed successfully.")
         
     except Exception as e:
@@ -583,7 +562,7 @@ if __name__ == "__main__":
     left_camera, main_camera, right_camera, left_audio, right_audio, output_path, project_id = sys.argv[1:8]
     
     # Initialize default parameters
-    speaker_bias = {'left': 1.2, 'main': 1.0, 'right': 1.0}
+    speaker_bias = {'left': 1.0, 'main': 1.0, 'right': 1.0}
     min_clip_duration = 1.0
     merge_audio = True
     audio_params = {
@@ -600,12 +579,12 @@ if __name__ == "__main__":
             processing_params = json.loads(sys.argv[8])
             
             # Update speaker bias if provided
-            if 'speaker_bias' in processing_params:
-                speaker_bias.update(processing_params['speaker_bias'])
+            #if 'speaker_bias' in processing_params:
+            #    speaker_bias.update(processing_params['speaker_bias'])
             
             # Update min clip duration if provided
-            if 'min_clip_duration' in processing_params:
-                min_clip_duration = float(processing_params['min_clip_duration'])
+            #if 'min_clip_duration' in processing_params:
+            #    min_clip_duration = float(processing_params['min_clip_duration'])
             
             # Update audio merging preference if provided
             if 'merge_audio' in processing_params:
@@ -626,13 +605,12 @@ if __name__ == "__main__":
     
     # print durations of each file
     print(f"Left camera duration: {VideoFileClip(left_camera).duration}")
-    print(f"Main camera duration: {VideoFileClip(main_camera).duration}")
     print(f"Right camera duration: {VideoFileClip(right_camera).duration}")
     print(f"Left audio duration: {AudioFileClip(left_audio).duration}")
     print(f"Right audio duration: {AudioFileClip(right_audio).duration}")
     
     # Validate input files exist
-    input_files = [left_camera, main_camera, right_camera, left_audio, right_audio]
+    input_files = [left_camera, right_camera, left_audio, right_audio]
     for file_path in input_files:
         if not os.path.exists(file_path):
             print(f"Error: File not found: {file_path}")
@@ -640,7 +618,6 @@ if __name__ == "__main__":
     
     process_videos(
         left_camera, 
-        main_camera, 
         right_camera, 
         left_audio, 
         right_audio, 
