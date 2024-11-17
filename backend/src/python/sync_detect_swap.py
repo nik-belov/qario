@@ -132,7 +132,7 @@ def switch(left_video_path, right_video_path, output_path):
         final_video.append(subclip)
 
     final_clip = concatenate_videoclips(final_video, method="compose")
-    final_clip.write_videofile(output_path, codec="libx264", fps=24)
+    final_clip.write_videofile(output_path, fps=24)
 
 
 def main(left_video_path, left_audio_path, right_video_path, right_audio_path, output_path):
