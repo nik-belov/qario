@@ -6,7 +6,7 @@ import mediapipe as mp
 import numpy as np
 import librosa
 from scipy.signal import correlate
-from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip
+from moviepy.editor import VideoFileClip, AudioFileClip
 
 
 def eprint(*args, **kwargs):
@@ -99,12 +99,11 @@ def calculate_offset(video_path, audio_path) -> float:
 
 
 def sync(video_path: str, audio_path: str):
-    eprint(f"Syncing \"{video_path}\" with \"{audio_path}\"")
     # shift audio on this value (if positive - cut video)
     eprint("Calculating offset...")
     offset_sec = calculate_offset(video_path, audio_path)
     if offset_sec < -30:
-        offset_sec += 1.2
+        offset_sec += 1.3
     eprint(f"Video-to-audio offset: {offset_sec} seconds")
 
     video_clip = VideoFileClip(video_path)

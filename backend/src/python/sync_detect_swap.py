@@ -1,557 +1,152 @@
 import sys
-import cv2
-import numpy as np
-from scipy.signal import correlate, butter, filtfilt, medfilt
-from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips
-from moviepy.audio.AudioClip import AudioArrayClip
 import os
-from speaker_detection_zoom import detect_faces_fast
-
+import time
+import argparse
+import numpy as np
+from scipy.signal import correlate
+import librosa
+from moviepy.editor import VideoFileClip, concatenate_videoclips, CompositeVideoClip
 import sync_video_audio
 
 
-# Convert audio to numpy arrays correctly
-def audio_to_array(audio_clip):
-    if audio_clip is None:
-        return np.array([])
-    chunks = list(audio_clip.iter_chunks(chunksize=1024))
-    if not chunks:
-        return np.array([])
-    return np.concatenate(chunks)
+def eprint(*args, **kwargs):
+    print(*args, **kwargs, file=sys.stderr)
 
-def sync_audio_with_video(video_path, audio_path):
-    """
-    Synchronize audio with video using audio waveform analysis
-    """
-    try:
-        return sync_video_audio.sync(video_path, audio_path)
-        
-    except Exception as e:
-        print(f"Error in sync_audio_with_video: {str(e)}")
-        # Fallback: return video with original audio
-        video_clip = VideoFileClip(video_path)
-        audio_clip = AudioFileClip(audio_path)
-        return video_clip.set_audio(audio_clip)
 
-def sync_cameras(left_video, right_video):
-    """
-    Synchronize cameras while preserving original video-audio sync
-    """
-    # Get audio from each video
-    left_audio = left_video.audio
-    right_audio = right_video.audio
-    
-    # Convert to arrays
-    def audio_to_array(audio):
-        if audio is None:
-            return np.array([])
-        chunks = list(audio.iter_chunks(chunksize=1024))
-        if not chunks:
-            return np.array([])
-        return np.concatenate(chunks)
+def get_audio_features(audio_path: str):
+    audio_signal, sr = librosa.load(audio_path, sr=16000)
 
-    left_array = audio_to_array(left_audio)
-    right_array = audio_to_array(right_audio)
-    
-    # Find sync points
-    delay = find_sync_offset(left_array, right_array)
-    
-    # Determine the global start time
-    global_start = max(0, -delay)
-    
-    # Adjust videos based on computed delays
-    left_start = max(0, global_start)
-    right_start = max(0, global_start + delay)
-    
-    left_synced = left_video.subclip(left_start)
-    right_synced = right_video.subclip(right_start)
-    
-    # Get minimum duration considering both video and audio
-    min_duration = min(
-        left_synced.duration, right_synced.duration,
-        left_synced.audio.duration if left_synced.audio else float('inf'),
-        right_synced.audio.duration if right_synced.audio else float('inf')
-    )
-    
-    # Trim to same length
-    left_synced = left_synced.subclip(0, min_duration)
-    right_synced = right_synced.subclip(0, min_duration)
-    
-    # Debug logging
-    print(f"Sync delay: {delay}")
-    print(f"Global start time: {global_start}")
-    print(f"Start times - Left: {left_start}, Right: {right_start}")
-    print(f"Synced durations - Left: {left_synced.duration}, Right: {right_synced.duration}")
-    print(f"Synced audio durations - Left: {left_synced.audio.duration}, Right: {right_synced.audio.duration}")
-    
-    return left_synced, right_synced
+    hop_length = round(sr / 100)
+    mfcc = librosa.feature.mfcc(y=audio_signal, sr=sr, n_mfcc=1, hop_length=hop_length)
+    return mfcc[0], 100
 
-def detect_mouth_movement(frame):
-    face_locations = detect_faces_fast(frame)
-    
-    if not face_locations:
-        return 0
-    
-    # Get the largest face (assuming the speaker is likely the largest face in the frame)
-    largest_face = max(face_locations, key=lambda face: (face[2] - face[0]) * (face[1] - face[3]))
-    
-    # Extract mouth region (approximate)
-    top, right, bottom, left = largest_face
-    mouth_top = top + int((bottom - top) * 0.65)
-    mouth_bottom = bottom
-    mouth_left = left + int((right - left) * 0.25)
-    mouth_right = right - int((right - left) * 0.25)
-    
-    mouth_region = frame[mouth_top:mouth_bottom, mouth_left:mouth_right]
-    
-    # Convert to grayscale
-    gray_mouth = cv2.cvtColor(mouth_region, cv2.COLOR_RGB2GRAY)
-    
-    # Calculate the variance of the mouth region
-    # Higher variance indicates more movement
-    mouth_variance = np.var(gray_mouth)
-    
-    return mouth_variance
 
-def enhance_mixed_audio(audio_array, sample_rate, 
-                       noise_reduction=0.1, 
-                       low_cut=100, 
-                       high_cut=7000, 
-                       compression_threshold=0.5, 
-                       compression_ratio=0.7):
-    """
-    Apply gentle enhancement to the mixed audio
-    """
-    # Apply subtle noise reduction
-    noise_reduced = audio_array * (1 - noise_reduction) + medfilt(audio_array, kernel_size=3) * noise_reduction
-    
-    # Apply bandpass filter to focus on speech frequencies
-    nyquist = sample_rate / 2
-    low_cutoff = low_cut / nyquist
-    high_cutoff = high_cut / nyquist
-    b, a = butter(2, [low_cutoff, high_cutoff], btype='band')
-    filtered = filtfilt(b, a, noise_reduced)
-    
-    # Gentle dynamic range compression
-    above_threshold = filtered > compression_threshold
-    filtered[above_threshold] = compression_threshold + (filtered[above_threshold] - compression_threshold) * compression_ratio
-    
-    # Normalize
-    filtered = filtered / np.max(np.abs(filtered))
-    
-    return filtered
+def normalize(features):
+    return (features - np.mean(features)) / np.std(features)
 
-def smart_audio_merge(audio1, audio2, sample_rate=44100,
-                     noise_reduction=0.05,
-                     low_cut=80,
-                     high_cut=8000,
-                     compression_threshold=0.7,
-                     compression_ratio=0.8):
-    """
-    Intelligently merge two audio streams using advanced processing techniques
-    """
-    def audio_to_array(audio_clip):
-        if audio_clip is None:
-            return np.array([])
-        chunks = list(audio_clip.iter_chunks(chunksize=1024))
-        if not chunks:
-            return np.array([])
-        return np.concatenate(chunks)
 
-    array1 = audio_to_array(audio1)
-    array2 = audio_to_array(audio2)
+def cross_correlation(a, b):
+    return correlate(a, b, mode='full', method='fft')
 
-    # Ensure same length
-    max_length = max(len(array1), len(array2))
-    array1 = np.pad(array1, ((0, max_length - len(array1)), (0, 0)) if len(array1.shape) > 1 else (0, max_length - len(array1)))
-    array2 = np.pad(array2, ((0, max_length - len(array2)), (0, 0)) if len(array2.shape) > 1 else (0, max_length - len(array2)))
 
-    # Convert to mono if stereo
-    if len(array1.shape) > 1:
-        array1 = np.mean(array1, axis=1)
-    if len(array2.shape) > 1:
-        array2 = np.mean(array2, axis=1)
+def calculate_offset(left_video_path, right_video_path):
+    left_audio_features, left_fps = get_audio_features(left_video_path)
+    right_audio_features, right_fps = get_audio_features(right_video_path)
 
-    # Process in windows
-    window_size = 1024
-    hop_length = 512
-    merged = np.zeros_like(array1)
+    left_audio_features = normalize(left_audio_features)
+    right_audio_features = normalize(right_audio_features)
 
-    for i in range(0, len(array1) - window_size, hop_length):
-        window1 = array1[i:i+window_size]
-        window2 = array2[i:i+window_size]
+    corr = cross_correlation(left_audio_features, right_audio_features)
+    offset = np.argmax(corr) - right_audio_features.shape[0] + 1
+    offset_sec = offset / right_fps
 
-        # Calculate SNR for each window
-        noise_floor1 = np.mean(np.sort(np.abs(window1))[:window_size//10])
-        noise_floor2 = np.mean(np.sort(np.abs(window2))[:window_size//10])
-        snr1 = np.mean(np.abs(window1)) / (noise_floor1 + 1e-10)
-        snr2 = np.mean(np.abs(window2)) / (noise_floor2 + 1e-10)
+    left_clip = VideoFileClip(left_video_path)
+    right_clip = VideoFileClip(right_video_path)
 
-        # Calculate spectral content
-        spec1 = np.abs(np.fft.rfft(window1))
-        spec2 = np.abs(np.fft.rfft(window2))
-        
-        # Calculate spectral flatness (measure of how noise-like the signal is)
-        flatness1 = np.exp(np.mean(np.log(spec1 + 1e-10))) / (np.mean(spec1) + 1e-10)
-        flatness2 = np.exp(np.mean(np.log(spec2 + 1e-10))) / (np.mean(spec2) + 1e-10)
-
-        # Calculate dynamic weights based on multiple factors
-        weight1 = snr1 * (1 - flatness1)
-        weight2 = snr2 * (1 - flatness2)
-        
-        # Normalize weights
-        total_weight = weight1 + weight2
-        if total_weight > 0:
-            weight1 /= total_weight
-            weight2 /= total_weight
-        else:
-            weight1 = weight2 = 0.5
-
-        # Apply spectral masking
-        freq_mask = np.where(spec1 > spec2, weight1, weight2)
-        merged_spec = spec1 * freq_mask + spec2 * (1 - freq_mask)
-        
-        # Reconstruct time domain signal
-        merged_window = np.fft.irfft(merged_spec * np.exp(1j * np.angle(np.fft.rfft(window1))))
-        
-        # Overlap-add
-        merged[i:i+window_size] += merged_window * np.hanning(window_size)
-
-    # Normalize output
-    merged = merged / np.max(np.abs(merged))
-
-    # Apply enhancement with provided settings
-    merged = enhance_mixed_audio(merged, sample_rate,
-                               noise_reduction=noise_reduction,
-                               low_cut=low_cut,
-                               high_cut=high_cut,
-                               compression_threshold=compression_threshold,
-                               compression_ratio=compression_ratio)
-
-    # Convert to stereo
-    merged_stereo = np.column_stack((merged, merged))
-
-    return AudioArrayClip(merged_stereo, fps=sample_rate)
-
-def find_audio_peaks(audio_array):
-    """
-    Find significant peaks in audio signal
-    """
-    # Convert stereo to mono if necessary
-    if len(audio_array.shape) > 1:
-        audio_mono = np.mean(audio_array, axis=1)
+    if offset_sec > 0:
+        left_clip = left_clip.subclip(offset_sec)
     else:
-        audio_mono = audio_array
+        right_clip = right_clip.subclip(-offset_sec)
+
+    min_duration = int(min(left_clip.duration, right_clip.duration))
+    print("Min duration:", min_duration)
+    left_clip = left_clip.subclip(0, min_duration)
+    right_clip = right_clip.subclip(0, min_duration)
+
+    new_left_path = "new_left_audio.wav"
+    new_right_path = "new_right_audio.wav"
+
+    left_clip.audio.write_audiofile(new_left_path, logger=None)
+    right_clip.audio.write_audiofile(new_right_path, logger=None)
+
+    return left_clip, right_clip, new_left_path, new_right_path
+
+
+# def get_speech_segments(audio_path):
+#     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token="<token>")
+
+#     # apply pretrained pipeline
+#     diarization = pipeline(audio_path)
+
+#     segments = []
+
+#     # print the result
+#     for turn, _, speaker in diarization.itertracks(yield_label=True):
+#         print(f"start={turn.start:.1f}s stop={turn.end:.1f}s speaker_{speaker}")
+#         segments.append((speaker, turn))
     
-    # Calculate amplitude envelope
-    window_size = 1024
-    amplitude_envelope = np.array([max(audio_mono[i:i+window_size]) 
-                                 for i in range(0, len(audio_mono), window_size)])
+#     return segments
+
+
+def switch(left_video_path, right_video_path, output_path):
+    left_clip, right_clip, left_audio_path, right_audio_path = calculate_offset(left_video_path, right_video_path)
     
-    # Find peaks above threshold
-    threshold = np.mean(amplitude_envelope) + 2 * np.std(amplitude_envelope)
-    peaks = np.where(amplitude_envelope > threshold)[0]
-    
-    return peaks * window_size
+    min_duration = int(min(left_clip.duration, right_clip.duration))
 
-def find_sync_offset(audio1, audio2):
-    """
-    Find timing offset between two audio streams using cross-correlation
-    """
-    # Convert to mono if stereo
-    if len(audio1.shape) > 1:
-        audio1 = np.mean(audio1, axis=1)
-    if len(audio2.shape) > 1:
-        audio2 = np.mean(audio2, axis=1)
-    
-    # Normalize audio signals
-    audio1 = (audio1 - np.mean(audio1)) / (np.std(audio1) + 1e-8)
-    audio2 = (audio2 - np.mean(audio2)) / (np.std(audio2) + 1e-8)
-    
-    # Compute cross-correlation
-    correlation = correlate(audio1, audio2, mode='full', method='fft')
-    max_idx = np.argmax(np.abs(correlation))
-    
-    # Convert samples to seconds
-    offset = (max_idx - len(audio1)) / 44100  # assuming 44.1kHz sample rate
-    
-    return offset
+    # speech_segments_raw = get_speech_segments(left_audio_clip)
+    # speech_segments = []
 
-def resize_clip(clip, target_width, target_height):
-    """
-    Resize a clip to match the target width and height while maintaining aspect ratio.
-    """
-    aspect_ratio = clip.w / clip.h
-    target_ratio = target_width / target_height
+    # curr_start = speech_segments_raw[0][1].start
+    # curr_end = speech_segments_raw[0][1].end
 
-    if aspect_ratio > target_ratio:
-        # Clip is wider, crop the sides
-        new_width = int(clip.h * target_ratio)
-        crop_amount = (clip.w - new_width) // 2
-        resized_clip = clip.crop(x1=crop_amount, x2=clip.w-crop_amount)
-    elif aspect_ratio < target_ratio:
-        # Clip is taller, crop the top and bottom
-        new_height = int(clip.w / target_ratio)
-        crop_amount = (clip.h - new_height) // 2
-        resized_clip = clip.crop(y1=crop_amount, y2=clip.h-crop_amount)
-    else:
-        # Aspect ratios match, no cropping needed
-        resized_clip = clip
+    # for i in range(1, len(speech_segments_raw)):
+    #     speaker, turn = speech_segments_raw[i]
+    #     speaker_prev, turn_prev = speech_segments_raw[i - 1]
 
-    return resized_clip.resize((target_width, target_height)).set_audio(clip.audio)
+    #     if speaker == speaker_prev and turn.start - turn_prev.end < 1:
+    #         curr_end = turn.end
+    #     else:
+    #         speech_segments.append((speaker, (curr_start, curr_end)))
+    #         curr_start = turn.start
+    #         curr_end = turn.end
 
-def analyze_audio_characteristics(audio_array, sample_rate=44100):
-    """
-    Analyze audio quality using established signal processing metrics
-    """
-    if len(audio_array.shape) > 1:
-        audio_array = np.mean(audio_array, axis=1)
-    
-    # 1. PESQ-inspired metrics (Perceptual Evaluation of Speech Quality)
-    # Calculate frequency-weighted SNR in critical bands
-    spectrum = np.abs(np.fft.rfft(audio_array))
-    freqs = np.fft.rfftfreq(len(audio_array), d=1/sample_rate)
-    
-    # Define critical bands (simplified version of Bark scale)
-    critical_bands = [
-        (20, 300),    # First formant region
-        (300, 1000),  # Second formant region
-        (1000, 3000), # Third formant region
-        (3000, 7000)  # Consonant region
-    ]
-    
-    band_weights = [0.2, 0.3, 0.3, 0.2]  # Based on speech intelligibility research
-    weighted_snr = 0
-    
-    for (low, high), weight in zip(critical_bands, band_weights):
-        band_mask = (freqs >= low) & (freqs <= high)
-        if np.any(band_mask):
-            band_spectrum = spectrum[band_mask]
-            band_snr = 10 * np.log10(
-                np.mean(band_spectrum**2) / 
-                (np.percentile(band_spectrum, 10)**2 + 1e-10)
-            )
-            weighted_snr += weight * min(band_snr / 30, 1)  # Cap at 30dB
-    
-    # 2. Speech Clarity Metrics
-    # Calculate modulation spectrum (4-16Hz range important for speech)
-    frame_size = int(0.032 * sample_rate)  # 32ms frames
-    hop_length = frame_size // 2
-    
-    frames = np.array([
-        np.sqrt(np.mean(frame**2))
-        for frame in np.array_split(audio_array, len(audio_array) // hop_length)
-    ])
-    
-    mod_spectrum = np.abs(np.fft.rfft(frames))
-    mod_freqs = np.fft.rfftfreq(len(frames), d=hop_length/sample_rate)
-    
-    speech_mod_mask = (mod_freqs >= 4) & (mod_freqs <= 16)
-    speech_mod_energy = np.mean(mod_spectrum[speech_mod_mask])
-    total_mod_energy = np.mean(mod_spectrum) + 1e-10
-    
-    # Speech modulation ratio (higher = clearer speech)
-    modulation_ratio = speech_mod_energy / total_mod_energy
-    
-    # 3. Calculate C50 (Speech Clarity Index - simplified)
-    # Ratio of early (< 50ms) to late energy
-    early_samples = int(0.05 * sample_rate)
-    early_energy = np.sum(audio_array[:early_samples]**2)
-    late_energy = np.sum(audio_array[early_samples:]**2) + 1e-10
-    c50 = 10 * np.log10(early_energy / late_energy)
-    
-    # Normalize C50 to 0-1 range (typical C50 values range from -5 to 15 dB)
-    c50_normalized = (c50 + 5) / 20
-    
-    # Combine metrics using research-based weights
-    clarity_score = (
-        0.4 * weighted_snr +          # Speech-weighted SNR
-        0.4 * modulation_ratio +      # Speech modulation
-        0.2 * min(max(c50_normalized, 0), 1)  # Early-to-late ratio
-    )
-    
-    # Calculate compression parameters based on clarity metrics
-    compression_threshold = 0.35 + (clarity_score * 0.4)  # Range: 0.35-0.75
-    compression_ratio = 0.6 + (clarity_score * 0.3)       # Range: 0.6-0.9
-    
-    return {
-        'compression_threshold': compression_threshold,
-        'compression_ratio': compression_ratio,
-        'clarity_score': clarity_score,
-        'weighted_snr': weighted_snr,
-        'modulation_ratio': modulation_ratio,
-        'c50': c50
-    }
+    #     if i + 1 == len(speech_segments_raw):
+    #         speech_segments.append((speaker, (curr_start, curr_end)))
 
-def process_videos(left_camera, right_camera, left_audio, right_audio, output_path, 
-                  speaker_bias={'left': 1.0, 'main': 1.0, 'right': 1.0},
-                  min_clip_duration=1.0,
-                  audio_params=None,
-                  merge_audio=True):
-    """
-    Process videos with configurable parameters
-    audio_params: dict with keys for audio processing settings
-    merge_audio: bool, whether to merge audio or use individual audio tracks
-    """
-    try:
-        print("Starting video processing...")
-        
-        # Sync audio with videos
-        print("Syncing left camera...")
-        left_synced = sync_audio_with_video(left_camera, left_audio)
-        print("Syncing right camera...")
-        right_synced = sync_audio_with_video(right_camera, right_audio)
+    # print(speech_segments)
 
-        # Sync cameras
-        print("Syncing all cameras together...")
-        left_synced, right_synced = sync_cameras(left_synced, right_synced)
+    speech_segments = [('SPEAKER_01', (0.03096875, 1.36409375)), ('SPEAKER_00', (2.41034375, 4.03034375)), ('SPEAKER_01', (4.03034375, 4.384718750000001)), ('SPEAKER_00', (4.232843750000001, 7.08471875)), ('SPEAKER_01', (8.40096875, 31.890968750000003)), ('SPEAKER_01', (17.47971875, 17.85096875)), ('SPEAKER_01', (26.27159375, 26.64284375)), ('SPEAKER_00', (31.82346875, 32.228468750000005)), ('SPEAKER_01', (32.228468750000005, 40.969718750000006)), ('SPEAKER_00', (38.877218750000004, 39.26534375)), ('SPEAKER_01', (41.37471875, 45.55971875)), ('SPEAKER_00', (44.040968750000005, 44.42909375)), ('SPEAKER_01', (45.99846875, 60.30846875)), ('SPEAKER_01', (47.46659375, 48.664718750000006)), ('SPEAKER_00', (60.51096875, 71.86784375)), ('SPEAKER_01', (72.12096875, 81.52034375000001)), ('SPEAKER_01', (72.82971875, 73.18409375)), ('SPEAKER_00', (77.08221875000001, 77.53784375000001)), ('SPEAKER_01', (81.99284375, 88.28721875000001)), ('SPEAKER_01', (83.62971875000001, 84.37221875)), ('SPEAKER_00', (87.07221875, 113.54909375000001)), ('SPEAKER_01', (114.20721875000001, 115.77659375)), ('SPEAKER_00', (115.45596875000001, 115.81034375)), ('SPEAKER_01', (115.81034375, 126.64409375000001)), ('SPEAKER_00', (127.16721875, 169.72596875000002)), ('SPEAKER_01', (170.41784375, 184.40721875)), ('SPEAKER_01', (172.83096875, 173.15159375000002)), ('SPEAKER_01', (176.96534375000002, 177.38721875000002)), ('SPEAKER_00', (178.75409375, 179.20971875)), ('SPEAKER_01', (184.77846875, 186.44909375)), ('SPEAKER_00', (186.63471875000002, 189.35159375)), ('SPEAKER_00', (186.93846875, 188.81159375000001)), ('SPEAKER_01', (190.54971875, 201.72096875000003)), ('SPEAKER_00', (201.83909375000002, 203.45909375000002)), ('SPEAKER_01', (204.06659375, 210.09096875)), ('SPEAKER_00', (210.09096875, 242.79471875000002)), ('SPEAKER_01', (244.06034375000002, 255.46784375000001)), ('SPEAKER_01', (244.09409375, 244.48221875000002)), ('SPEAKER_01', (253.17284375000003, 253.45971875)), ('SPEAKER_00', (256.26096875, 291.32721875000004)), ('SPEAKER_01', (291.93471875, 297.68909375000004)), ('SPEAKER_01', (292.52534375, 293.92596875000004)), ('SPEAKER_00', (297.68909375000004, 303.15659375)), ('SPEAKER_00', (297.75659375000004, 300.28784375000004)), ('SPEAKER_01', (303.15659375, 305.29971875)), ('SPEAKER_01', (303.19034375, 303.98346875000004)), ('SPEAKER_01', (305.45159375000003, 305.89034375)), ('SPEAKER_00', (311.02034375, 312.21846875)), ('SPEAKER_00', (311.18909375000004, 314.00721875)), ('SPEAKER_00', (317.33159375, 318.63096875))]
 
-        if merge_audio:
-            print("Analyzing audio characteristics...")
-            # Convert audio to arrays for analysis
-            left_array = audio_to_array(left_synced.audio)
-            right_array = audio_to_array(right_synced.audio)
-            
-            # Analyze both audio tracks
-            left_analysis = analyze_audio_characteristics(left_array)
-            right_analysis = analyze_audio_characteristics(right_array)
-            
-            # Use the more conservative compression settings
-            optimal_compression = {
-                'compression_threshold': max(left_analysis['compression_threshold'], 
-                                          right_analysis['compression_threshold']),
-                'compression_ratio': max(left_analysis['compression_ratio'], 
-                                       right_analysis['compression_ratio'])
-            }
-            
-            print(f"Optimal compression parameters determined: {optimal_compression}")
-            
-            # Update audio_params with analyzed compression settings
-            if audio_params is None:
-                audio_params = {}
-            audio_params.update(optimal_compression)
-            
-            # Use smart audio merging with provided parameters
-            print("Merging audio tracks...")
-            merged_audio = smart_audio_merge(
-                left_synced.audio, 
-                right_synced.audio,
-                **audio_params
-            )
-            
-            # Apply merged audio to all clips
-            left_synced = left_synced.set_audio(merged_audio)
-            right_synced = right_synced.set_audio(merged_audio)
-        else:
-            print("Using individual audio tracks...")
-            # Keep original audio for each video
-            pass
+    speech_segments = [segment for segment in speech_segments if segment[1][1] < min_duration]
 
-        # Get minimum duration considering both video and audio for each clip
-        left_duration = min(left_synced.duration, left_synced.audio.duration if left_synced.audio else float('inf'))
-        right_duration = min(right_synced.duration, right_synced.audio.duration if right_synced.audio else float('inf'))
+    final_video = []
+    last_end_time = 0
 
-        # Use the shortest duration among all clips
-        min_duration = min(left_duration, right_duration)
+    # switcher
+    for speaker, (start, end) in speech_segments:
+        if end < last_end_time:
+            continue
 
-        # Trim videos to the shortest duration that has both audio and video
-        left_synced = left_synced.subclip(0, min_duration)
-        right_synced = right_synced.subclip(0, min_duration)
+        if start < last_end_time:
+            start = last_end_time
 
-        print(f"Adjusted duration: {min_duration}")
-        print(f"Left synced - Duration: {left_synced.duration}, FPS: {left_synced.fps}")
-        print(f"Right synced - Duration: {right_synced.duration}, FPS: {right_synced.fps}")
+        if end - start < 1:
+            continue
 
-        # Process frames and swap based on speaker detection
-        clips = []
-        current_speaker = 1  # Start with main camera
-        segment_start = 0
-        min_clip_duration = min_clip_duration  # Minimum clip duration in seconds
+        if speaker == 'SPEAKER_00':
+            subclip = left_clip.subclip(last_end_time, end)
+        elif speaker == 'SPEAKER_01':
+            subclip = right_clip.subclip(last_end_time, end)
 
-        print(f"Processing frames for {min_duration} seconds...")
-        for t in np.arange(0, min_duration, 1/left_synced.fps):
-            # Ensure we don't go beyond the clip duration
-            if t >= min_duration - 1/left_synced.fps:
-                break
+        last_end_time = end    
+        final_video.append(subclip)
 
-            try:
-                left_frame = left_synced.get_frame(t)
-                right_frame = right_synced.get_frame(t)
-            except Exception as e:
-                print(f"Error getting frame at time {t}: {str(e)}")
-                break
+    final_clip = concatenate_videoclips(final_video, method="compose")
+    final_clip.write_videofile(output_path, codec="libx264", fps=24)
 
-            left_movement = detect_mouth_movement(left_frame) * speaker_bias['left']
-            right_movement = detect_mouth_movement(right_frame) * speaker_bias['right']
 
-            new_speaker = 0  # default to left
-            if left_movement > right_movement:
-                new_speaker = 0
-            elif right_movement > left_movement:
-                new_speaker = 2
-            
-            # Only create a new clip when speaker changes and the previous clip is long enough
-            if new_speaker != current_speaker and (t - segment_start) >= min_clip_duration:
-                # Add the clip up to this point
-                clip_end = t
-                try:
-                    if current_speaker == 0:
-                        clip = left_synced.subclip(segment_start, clip_end)
-                    else:
-                        clip = right_synced.subclip(segment_start, clip_end)
-                    
-                    # Ensure audio is included in the clip
-                    if clip.audio is None:
-                        print(f"Warning: No audio in clip from {segment_start} to {clip_end}")
-                                        
-                    clips.append(clip.set_fps(left_synced.fps))
-                except Exception as e:
-                    print(f"Error creating subclip from {segment_start} to {clip_end}: {str(e)}")
-                    break
-                
-                segment_start = clip_end
-                current_speaker = new_speaker
+def main(left_video_path, left_audio_path, right_video_path, right_audio_path, output_path):
+    left_video = sync_video_audio.sync(left_video_path, left_audio_path)
+    right_video = sync_video_audio.sync(right_video_path, right_audio_path)
 
-        # Add the final clip
-        try:
-            if current_speaker == 0:
-                clip = left_synced.subclip(segment_start, min_duration)
-            else:
-                clip = right_synced.subclip(segment_start, min_duration)
-            
-            # Ensure audio is included in the final clip
-            if clip.audio is None:
-                print(f"Warning: No audio in final clip from {segment_start} to {min_duration}")
-            
-            # Resize final clip to match left's aspect ratio
-            clip = resize_clip(clip, left_synced.w, left_synced.h)
-            
-            clips.append(clip.set_fps(left_synced.fps))
-        except Exception as e:
-            print(f"Error adding final clip: {str(e)}")
+    synced_left_path = "new_left_path.mp4"
+    synced_right_path = "new_right_path.mp4"
 
-        print(f"Number of clips generated: {len(clips)}")
+    left_video.write_videofile(synced_left_path, logger=None)
+    right_video.write_videofile(synced_right_path, logger=None)
 
-        if not clips:
-            print("No clips were generated. Using left video as fallback.")
-            final_video = left_synced
-        else:
-            print("Concatenating clips...")
-            print(clips)
-            final_video = concatenate_videoclips(clips, method="compose")
+    switch(synced_left_path, synced_right_path, output_path)
 
-        # Ensure the final video has audio
-        if final_video.audio is None:
-            print("Warning: Final video has no audio. Attempting to add audio from left video.")
-            final_video = final_video.set_audio(left_synced.audio)
-
-        print(f"Writing final video to {output_path}...")
-        final_video.write_videofile(output_path, fps=left_synced.fps, audio_codec='aac', audio=True)
-        print("Video processing completed successfully.")
-        
-    except Exception as e:
-        print(f"Error in process_videos: {str(e)}")
-        raise
 
 if __name__ == "__main__":
     if len(sys.argv) < 8:
@@ -561,72 +156,15 @@ if __name__ == "__main__":
     # Get the basic parameters
     left_camera, main_camera, right_camera, left_audio, right_audio, output_path, project_id = sys.argv[1:8]
     
-    # Initialize default parameters
-    speaker_bias = {'left': 1.0, 'main': 1.0, 'right': 1.0}
-    min_clip_duration = 1.0
-    merge_audio = True
-    audio_params = {
-        'noise_reduction': 0.05,
-        'low_cut': 80,
-        'high_cut': 8000
-        # compression parameters will be determined automatically
-    }
-    
-    # If processing parameters are provided as JSON string
-    if len(sys.argv) > 8:
-        try:
-            import json
-            processing_params = json.loads(sys.argv[8])
-            
-            # Update speaker bias if provided
-            #if 'speaker_bias' in processing_params:
-            #    speaker_bias.update(processing_params['speaker_bias'])
-            
-            # Update min clip duration if provided
-            #if 'min_clip_duration' in processing_params:
-            #    min_clip_duration = float(processing_params['min_clip_duration'])
-            
-            # Update audio merging preference if provided
-            if 'merge_audio' in processing_params:
-                merge_audio = bool(processing_params['merge_audio'])
-            
-            # Update audio parameters if provided
-            if 'audio_params' in processing_params:
-                audio_params.update(processing_params['audio_params'])
-                
-            print("Using custom processing parameters:")
-            print(f"Speaker bias: {speaker_bias}")
-            print(f"Min clip duration: {min_clip_duration}")
-            print(f"Merge audio: {merge_audio}")
-            print(f"Audio parameters: {audio_params}")
-        except Exception as e:
-            print(f"Error parsing processing parameters: {str(e)}")
-            print("Using default parameters")
-    
-    # print durations of each file
-    print(f"Left camera duration: {VideoFileClip(left_camera).duration}")
-    print(f"Right camera duration: {VideoFileClip(right_camera).duration}")
-    print(f"Left audio duration: {AudioFileClip(left_audio).duration}")
-    print(f"Right audio duration: {AudioFileClip(right_audio).duration}")
-    
-    # Validate input files exist
-    input_files = [left_camera, right_camera, left_audio, right_audio]
-    for file_path in input_files:
-        if not os.path.exists(file_path):
-            print(f"Error: File not found: {file_path}")
-            sys.exit(1)
-    
-    process_videos(
-        left_camera, 
-        right_camera, 
-        left_audio, 
-        right_audio, 
-        output_path,
-        speaker_bias=speaker_bias,
-        min_clip_duration=min_clip_duration,
-        audio_params=audio_params,
-        merge_audio=merge_audio
-    )
-    
-    print(f"Processing completed. Output saved to {output_path}")
+    start = time.time()
 
+    main(
+        left_video_path=left_camera,
+        left_audio_path=left_audio,
+        right_video_path=right_camera,
+        right_audio_path=right_audio,
+        output_path=output_path
+    )
+
+    finish = time.time()
+    eprint(f"Proccessing took: {int(finish - start)} seconds")
